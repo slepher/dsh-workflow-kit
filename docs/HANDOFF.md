@@ -41,8 +41,9 @@ depends on `dsh-codex-kit-backend`, not the Codex browser/Host package.
 The dependency is the published-version contract
 `dsh-codex-kit-backend@0.1.0`; neither the manifest nor lock points at a source
 checkout, temporary directory, or tarball. Before publication, local candidate
-validation uses an npm workspace containing the backend package rather than
-changing that consumer contract.
+development uses `npm run prepare:local`, which performs the adjacent Codex
+locked install, installs only its matching backend with npm `--no-save`, and
+builds backend → Codex without changing that consumer contract.
 
 ## Stage 4 verification
 
@@ -51,6 +52,12 @@ On 2026-09-11, a clean combined source workspace with repository `lib`,
 ran `npm ci`, built backend → Codex → workflow, and passed the full workflow
 suite (29 tests). The fixture pinned the complete DSH dependency set to
 `0.1.5-rc.1` and used no peer-dependency bypass.
+
+The documented `npm run prepare:local` was also run from fresh adjacent
+no-`lib`, no-`node_modules` copies. It installed 78 Codex workspace packages
+and 540 workflow packages, built backend then Codex, and left SHA-256 values for
+both repositories' manifests and locks unchanged. The following workflow build
+and full 30-test suite passed.
 
 `npm run pack:check` packed backend, Codex, and workflow candidates, installed
 all three with fixed rc.1 DSH and React peers, imported every public Host entry,

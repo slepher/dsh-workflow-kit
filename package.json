@@ -24,6 +24,7 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "dev": "node scripts/dev.mjs",
     "pack:check": "node scripts/pack-check.mjs",
+    "prepare:local": "node scripts/prepare-local.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

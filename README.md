@@ -24,10 +24,17 @@ Managed worker mutation and occupied lane creation are rejected through the back
 Requires Node.js 22.19 or newer, DSH `0.1.5-rc.1`, `dsh-codex-kit-backend` `0.1.0`, Python 3 for the bundled standard-library contract validator, and Git for managed lane/integration operations.
 
 ```bash
-npm install
+npm run prepare:local
 npm run build
 npm test
 ```
+
+`prepare:local` is the pre-publication setup for two adjacent fresh checkouts
+named `dsh-codex-kit` and `dsh-workflow-kit`. It runs the Codex workspace's
+locked install, installs the matching adjacent backend into this checkout with
+npm's `--no-save` mode, then builds backend → Codex. It does not rewrite either
+repository's manifest or lock. Once `dsh-codex-kit-backend@0.1.0` is published,
+a standalone workflow consumer can use ordinary `npm ci` instead.
 
 The package ships compiled host/client entries, `cordis.patch.yml`, and `scripts/workflowctl.py`. Its build uses its own installed esbuild to emit the rc.1 browser closure registration. Backend code changes require an explicit restart after running tasks are safely stopped; unloading this workflow tool/UI package does not close backend processes.
 
@@ -43,7 +50,8 @@ dsh plugin --profile workflow-dev add \
   link:/absolute/path/to/dsh-workflow-kit
 ```
 
-After `npm install` in both repositories, one command builds and watches both checkouts and starts one host:
+After the one-time `npm run prepare:local`, one command builds and watches both
+checkouts and starts one host:
 
 ```bash
 npm run dev -- --profile workflow-dev
