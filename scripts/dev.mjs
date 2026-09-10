@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -7,6 +7,15 @@ const args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
 const profile = option("--profile") ?? process.env.DSH_PROFILE ?? "workflow-dev";
 const codex = resolve(option("--codex-kit") ?? process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
+const patchArgs = [];
+for (let index = 0; index < args.length; index++) {
+  if (args[index] !== "--patch") continue;
+  const value = args[++index];
+  if (!value || value.startsWith("--")) throw new Error("--patch requires a file path");
+  const patch = resolve(value);
+  if (!existsSync(patch) || !statSync(patch).isFile()) throw new Error(`DSH patch file not found: ${patch}`);
+  patchArgs.push("--patch", patch);
+}
 const dshHome = resolve(process.env.DSH_HOME ?? join(homedir(), ".dsh"));
 const profileManifest = join(dshHome, "profiles", profile, "package.json");
 
@@ -41,5 +50,6 @@ await new Promise((ready, reject) => {
 const build = spawnSync("npm", ["run", "build"], { stdio: "inherit", shell: process.platform === "win32" });
 if ((build.status ?? 1) !== 0) await close(build.status ?? 1);
 start(process.execPath, ["scripts/watch.mjs"]);
-start("dsh", ["--profile", profile, "--no-open", "--port", "0"]);
+const hostArgs = ["--profile", profile, "--no-open", "--port", "0", ...patchArgs];
+start("dsh", hostArgs);
 console.log(`dsh-workflow-kit dev processes started (profile ${profile}; Codex ${codex})`);

@@ -13,3 +13,10 @@ with a checkout path.
 The profile bundle order is `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `dsh-codex-kit-backend`, `dsh-codex-kit`, then `dsh-workflow-kit`. Configure one backend state directory and one workflow state directory under the profile. Enable HMR for the Codex UI and workflow `lib` directories; exclude the backend because backend changes require a host restart.
 
 Run `npm run dev -- --profile workflow-dev`. The command starts the adjacent Codex watch-only entry, waits for its exact `dsh-codex-kit watch ready` line (after backend then Codex UI build), builds workflow, starts its watcher, then starts one DSH host on port `0` using the official rc.1 `dsh` on PATH. The workflow build emits `lib/client.js` as the rc.1 `window.__ModuleLoader__.load` closure for `dsh-workflow-kit`; each workflow source change reruns that complete build for client HMR. `--codex-kit`, `DSH_CODEX_KIT_CHECKOUT`, `--profile`, and `DSH_PROFILE` retain their existing checkout/profile overrides. SIGINT or SIGTERM stops only these child processes.
+
+For a temporary `stateDir` conflict, add repeatable `--patch
+/absolute/path/to/overlay.yml` pairs. Every value must resolve to an existing
+file; pairs are forwarded in their given order to that same PATH `dsh` Host.
+They do not rewrite the profile bundle list or alter HMR configuration. Dev
+cleanup still signals only children created by this command and never stops an
+older Host from another run.

@@ -57,4 +57,17 @@ checkouts and starts one host:
 npm run dev -- --profile workflow-dev
 ```
 
+If the profile's configured `stateDir` conflicts with another stage-5 run,
+append one or more official rc.1 patch overlays in order:
+
+```bash
+npm run dev -- --profile workflow-dev \
+  --patch /absolute/path/to/state-overlay.yml
+```
+
+Each `--patch` must name an existing file. The dev command resolves it to an
+absolute path and forwards the repeatable pairs to its single PATH `dsh` Host.
+This temporary overlay does not edit profile bundles or change either HMR
+watcher. The command does not discover or stop a Host started by another run.
+
 The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. The script uses only `dsh` on PATH, waits for the Codex watcher's initial-build readiness line, then starts the workflow watcher and one host. Workflow source changes rerun the TypeScript plus closure build so client HMR always receives a registered `dsh-workflow-kit` artifact. Ctrl+C stops only its own two watchers and host.
