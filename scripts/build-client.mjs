@@ -7,7 +7,7 @@ const codex = resolve(root, process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-
 const { build } = createRequire(join(codex, "package.json"))("esbuild");
 
 await build({
-  entryPoints: [join(root, "src/client.ts")],
+  entryPoints: [join(root, "src/client.tsx")],
   outfile: join(root, "lib/client.js"),
   bundle: true,
   format: "cjs",
