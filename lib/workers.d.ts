@@ -1,0 +1,50 @@
+import { EventEmitter } from "node:events";
+import type { CodexBackend } from "dsh-codex-kit-backend/browser-types";
+import { WorkflowStore } from "./store.js";
+import type { Acceptance, Boundary, Report, Worker } from "./types.js";
+export type WorkflowBackend = CodexBackend;
+export declare class Workers extends EventEmitter {
+    readonly backend: WorkflowBackend;
+    readonly store: WorkflowStore;
+    readonly workflowSkillDir: string;
+    readonly implementationStandardDir?: string | undefined;
+    private readonly permitted;
+    private readonly subscriptions;
+    private readonly guards;
+    constructor(backend: WorkflowBackend, store: WorkflowStore, workflowSkillDir: string, implementationStandardDir?: string | undefined);
+    list(parentId: string): Worker[];
+    get(parentId: string, id: string): Worker;
+    pending(parentId: string): Report[];
+    create(parentId: string, input: {
+        id?: string;
+        name: string;
+        cwd: string;
+        role?: string;
+        model?: string;
+        effort?: string;
+        managed?: boolean;
+        boundary?: Boundary;
+    }): Promise<Worker>;
+    append(parentId: string, id: string, text: string, managed?: boolean): Promise<Worker>;
+    steer(parentId: string, id: string, turnId: string, text: string, managed?: boolean): Promise<void>;
+    interrupt(parentId: string, id: string, turnId: string, managed?: boolean): Promise<void>;
+    resume(parentId: string, id: string, confirmedStopped?: boolean, managed?: boolean): Promise<Worker>;
+    configure(parentId: string, id: string, model?: string, effort?: string, managed?: boolean): Promise<Worker>;
+    approve(parentId: string, id: string, approvalId: string, decision: "accept" | "decline" | "cancel"): Promise<void>;
+    acknowledge(parentId: string, id: string, turnId: string): Report;
+    accept(parentId: string, id: string, turnId: string, acceptance: Acceptance, managed?: boolean): Report;
+    closeWorker(parentId: string, id: string, confirmedStopped?: boolean, managed?: boolean): Promise<void>;
+    reconcile(worker: Worker): Promise<void>;
+    reconcileAll(): Promise<void>;
+    close(): Promise<void>;
+    private report;
+    private managed;
+    private expectedTurn;
+    private watch;
+    private consume;
+    private complete;
+    private guard;
+    private assertLaneAvailable;
+    private allow;
+}
+//# sourceMappingURL=workers.d.ts.map

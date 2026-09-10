@@ -1,0 +1,1 @@
+export const WORKFLOW_PLUGIN_ID = "dsh-workflow-kit";
