@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { CodexBackend } from "dsh-codex-kit-backend/browser-types";
 import { WorkflowStore } from "./store.js";
-import type { Acceptance, Boundary, Report, Worker } from "./types.js";
+import { type Acceptance, type Boundary, type Report, type Skill, type Worker } from "./types.js";
 export type WorkflowBackend = CodexBackend;
 export declare class Workers extends EventEmitter {
     readonly backend: WorkflowBackend;
@@ -11,6 +11,7 @@ export declare class Workers extends EventEmitter {
     private readonly permitted;
     private readonly subscriptions;
     private readonly guards;
+    private readonly publicItems;
     constructor(backend: WorkflowBackend, store: WorkflowStore, workflowSkillDir: string, implementationStandardDir?: string | undefined);
     list(parentId: string): Worker[];
     get(parentId: string, id: string): Worker;
@@ -24,12 +25,19 @@ export declare class Workers extends EventEmitter {
         effort?: string;
         managed?: boolean;
         boundary?: Boundary;
+        owner?: "agent" | "user";
     }): Promise<Worker>;
-    append(parentId: string, id: string, text: string, managed?: boolean): Promise<Worker>;
-    steer(parentId: string, id: string, turnId: string, text: string, managed?: boolean): Promise<void>;
+    occupiedThreads(): Set<string>;
+    adopt(parentId: string, threadId: string): Promise<Worker>;
+    link(parentId: string, id: string): Worker;
+    detach(parentId: string, id: string): Promise<void>;
+    append(parentId: string, id: string, text: string, managed?: boolean, skills?: readonly Skill[]): Promise<Worker>;
+    steer(parentId: string, id: string, turnId: string, text: string, managed?: boolean, skills?: readonly Skill[]): Promise<void>;
     interrupt(parentId: string, id: string, turnId: string, managed?: boolean): Promise<void>;
     resume(parentId: string, id: string, confirmedStopped?: boolean, managed?: boolean): Promise<Worker>;
     configure(parentId: string, id: string, model?: string, effort?: string, managed?: boolean): Promise<Worker>;
+    compact(parentId: string, id: string): Promise<Worker>;
+    review(parentId: string, id: string): Promise<Worker>;
     approve(parentId: string, id: string, approvalId: string, decision: "accept" | "decline" | "cancel"): Promise<void>;
     acknowledge(parentId: string, id: string, turnId: string): Report;
     accept(parentId: string, id: string, turnId: string, acceptance: Acceptance, managed?: boolean): Report;
@@ -42,6 +50,7 @@ export declare class Workers extends EventEmitter {
     private expectedTurn;
     private watch;
     private consume;
+    private conversationEvent;
     private complete;
     private guard;
     private assertLaneAvailable;

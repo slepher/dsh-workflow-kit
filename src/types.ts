@@ -94,6 +94,7 @@ export interface Worker {
   rawUsageTotal?: UsageValues;
   usageOffset?: UsageValues;
   usageResetPending?: boolean;
+  turnUsageStart?: UsageValues;
   requiredProfile?: { model: string; effort: Effort };
   developerInstructions?: string;
   error?: string;

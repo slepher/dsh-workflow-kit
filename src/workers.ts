@@ -2,9 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { BackendEvent, BackendMutation, CodexBackend, CreateSessionOptions, SequencedBackendEvent, StartTurnOptions } from "dsh-codex-kit-backend/browser-types";
+import { conversation } from "./conversation.js";
 import { resolveRole } from "./roles.js";
 import { WorkflowStore } from "./store.js";
-import type { Acceptance, Boundary, DurableBackendEvent, Report, Worker } from "./types.js";
+import { parseUsage, type Acceptance, type Boundary, type Compaction, type ConversationItem, type DurableBackendEvent, type Report, type Skill, type Worker } from "./types.js";
 
 export type WorkflowBackend = CodexBackend;
 
@@ -15,6 +16,7 @@ export class Workers extends EventEmitter {
   private readonly permitted = new AsyncLocalStorage<boolean>();
   private readonly subscriptions = new Map<string, () => void>();
   private readonly guards = new Map<string, () => void>();
+  private readonly publicItems = new Map<string, Map<string, ConversationItem>>();
 
   constructor(readonly backend: WorkflowBackend, readonly store: WorkflowStore, readonly workflowSkillDir: string, readonly implementationStandardDir?: string) {
     super();
@@ -22,15 +24,15 @@ export class Workers extends EventEmitter {
     for (const worker of store.read().workers.filter(item => !item.closed)) this.watch(worker);
   }
 
-  list(parentId: string): Worker[] { return this.store.read().workers.filter(worker => worker.parentId === parentId && !worker.closed); }
+  list(parentId: string): Worker[] { return this.store.read().workers.filter(worker => worker.parentId === parentId && !worker.closed && !worker.detached); }
   get(parentId: string, id: string): Worker {
     const worker = this.list(parentId).find(item => item.id === id);
     if (!worker) throw new Error("Worker not found");
     return worker;
   }
-  pending(parentId: string): Report[] { return this.list(parentId).flatMap(worker => worker.reports.filter(report => !report.acknowledgedAt)); }
+  pending(parentId: string): Report[] { return this.list(parentId).filter(worker => worker.owner !== "user").flatMap(worker => worker.reports.filter(report => !report.acknowledgedAt)); }
 
-  async create(parentId: string, input: { id?: string; name: string; cwd: string; role?: string; model?: string; effort?: string; managed?: boolean; boundary?: Boundary }): Promise<Worker> {
+  async create(parentId: string, input: { id?: string; name: string; cwd: string; role?: string; model?: string; effort?: string; managed?: boolean; boundary?: Boundary; owner?: "agent" | "user" }): Promise<Worker> {
     if (!parentId || !input.name.trim()) throw new Error("Parent and worker name are required");
     if (!input.managed) this.assertLaneAvailable(input.cwd);
     const role = input.role ? resolveRole(input.role, this.workflowSkillDir, this.implementationStandardDir) : undefined;
@@ -40,7 +42,7 @@ export class Workers extends EventEmitter {
       id, parentId, name: input.name, cwd: input.cwd, role: role?.name,
       model: role?.model ?? input.model, effort: role?.effort ?? input.effort,
       state: "unknown", managed: input.managed === true,
-      lastEventSequence: 0, reports: [], output: {},
+      lastEventSequence: 0, reports: [], output: {}, owner: input.owner ?? "agent",
     };
     this.store.read().workers.push(worker); this.store.save();
     const options: CreateSessionOptions = { model: worker.model, reasoningEffort: worker.effort, developerInstructions: role?.developerInstructions, boundary: input.boundary };
@@ -52,15 +54,58 @@ export class Workers extends EventEmitter {
     return structuredClone(worker);
   }
 
-  async append(parentId: string, id: string, text: string, managed = false): Promise<Worker> {
+  occupiedThreads(): Set<string> {
+    return new Set(this.store.read().workers.filter(worker => !worker.detached || !["idle", "saved"].includes(worker.state) || worker.savedState !== "idle").flatMap(worker => worker.threadId ? [worker.threadId] : []));
+  }
+
+  async adopt(parentId: string, threadId: string): Promise<Worker> {
+    if (this.occupiedThreads().has(threadId)) throw new Error("This Codex session is already occupied");
+    const existing = this.store.read().workers.find(worker => worker.threadId === threadId && worker.detached && worker.state === "saved" && worker.savedState === "idle");
+    if (existing) {
+      existing.parentId = parentId; existing.owner = "user"; existing.detached = false; this.store.save(); this.watch(existing);
+      return structuredClone(existing);
+    }
+    const id = randomUUID();
+    const session = await this.allow(() => this.backend.importSession(owner(parentId), id, threadId));
+    const worker: Worker = {
+      id, parentId, owner: "user", name: threadId, cwd: session.cwd,
+      model: session.model, effort: session.reasoningEffort, threadId,
+      state: "saved", savedState: "idle", managed: false,
+      lastEventSequence: 0, reports: [], output: {},
+    };
+    this.store.read().workers.push(worker); this.store.save(); this.watch(worker);
+    return structuredClone(worker);
+  }
+
+  link(parentId: string, id: string): Worker {
+    const worker = this.get(parentId, id);
+    if (worker.owner !== "user") throw new Error("Only a user conversation can be linked");
+    worker.owner = "agent";
+    for (const report of worker.reports) report.acknowledgedAt ??= new Date().toISOString();
+    this.store.save(); return structuredClone(worker);
+  }
+
+  async detach(parentId: string, id: string): Promise<void> {
+    const worker = this.get(parentId, id);
+    if (worker.owner !== "user") throw new Error("Only user conversations can be removed from this group");
+    if (worker.state === "idle" || worker.state === "saved" && worker.savedState === "idle") {
+      await this.allow(() => this.backend.closeSession(owner(parentId), id));
+      worker.state = "saved"; worker.savedState = "idle";
+      this.subscriptions.get(id)?.(); this.subscriptions.delete(id);
+    }
+    worker.detached = true; this.store.save(); this.emit("changed", worker);
+  }
+
+  async append(parentId: string, id: string, text: string, managed = false, skills: readonly Skill[] = []): Promise<Worker> {
     const worker = this.get(parentId, id);
     if (worker.managed !== managed) throw new Error("Managed workflow worker requires codex_workflow");
     if (!text.trim() || worker.state !== "idle") throw new Error(`Worker is ${worker.state}; use steer for an active turn`);
     const key = `${worker.id}:${worker.reports.length + 1}`;
     const options: StartTurnOptions = { model: worker.model, reasoningEffort: worker.effort, idempotencyKey: key };
+    worker.turnUsageStart = worker.usage ? structuredClone(worker.usage.total) : undefined;
     worker.state = "running"; this.store.save();
     try {
-      const turn = await this.allow(() => this.backend.startTurn(owner(parentId), id, text, options));
+      const turn = await this.allow(() => this.backend.startTurn(owner(parentId), id, [{ type: "text", text }, ...skills.map(skill => ({ type: "skill" as const, name: skill.name, path: skill.path }))], options));
       worker.threadId = turn.threadId; worker.turnId = turn.turnId; worker.state = turn.state;
       worker.output[turn.turnId] ??= []; this.store.save(); this.emit("changed", worker);
       return structuredClone(worker);
@@ -70,9 +115,9 @@ export class Workers extends EventEmitter {
     }
   }
 
-  async steer(parentId: string, id: string, turnId: string, text: string, managed = false): Promise<void> {
+  async steer(parentId: string, id: string, turnId: string, text: string, managed = false, skills: readonly Skill[] = []): Promise<void> {
     const worker = this.get(parentId, id); this.managed(worker, managed); this.expectedTurn(worker, turnId);
-    await this.allow(() => this.backend.steerTurn(owner(parentId), turnId, text));
+    await this.allow(() => this.backend.steerTurn(owner(parentId), turnId, [{ type: "text", text }, ...skills.map(skill => ({ type: "skill" as const, name: skill.name, path: skill.path }))]));
   }
   async interrupt(parentId: string, id: string, turnId: string, managed = false): Promise<void> {
     const worker = this.get(parentId, id); this.managed(worker, managed); this.expectedTurn(worker, turnId);
@@ -82,7 +127,7 @@ export class Workers extends EventEmitter {
   async resume(parentId: string, id: string, confirmedStopped = false, managed = false): Promise<Worker> {
     const worker = this.get(parentId, id); this.managed(worker, managed);
     const session = await this.allow(() => this.backend.resumeSession(owner(parentId), id, confirmedStopped));
-    worker.threadId = session.threadId; worker.state = session.state; this.store.save(); this.watch(worker);
+    worker.threadId = session.threadId; worker.state = session.state; if (session.usage) worker.usage = parseUsage(session.usage); this.store.save(); this.watch(worker);
     await this.reconcile(worker); return structuredClone(worker);
   }
   async configure(parentId: string, id: string, model?: string, effort?: string, managed = false): Promise<Worker> {
@@ -90,8 +135,27 @@ export class Workers extends EventEmitter {
     const session = await this.allow(() => this.backend.configureSession(owner(parentId), id, { model, reasoningEffort: effort }));
     worker.model = session.model; worker.effort = session.reasoningEffort; this.store.save(); return structuredClone(worker);
   }
+  async compact(parentId: string, id: string): Promise<Worker> {
+    const worker = this.get(parentId, id); this.managed(worker, false);
+    if (worker.state !== "idle") throw new Error("Wait for the current turn before compacting");
+    const operation: Compaction = { id: randomUUID(), turnId: null, status: "inProgress" };
+    (worker.compactions ??= []).push(operation); worker.usageResetPending = true; worker.state = "starting"; this.store.save();
+    try { await this.allow(() => this.backend.compactSession(owner(parentId), id)); }
+    catch (error) { operation.status = "unknown"; operation.error = String(error); worker.state = "unknown"; this.store.save(); throw error; }
+    return structuredClone(worker);
+  }
+  async review(parentId: string, id: string): Promise<Worker> {
+    const worker = this.get(parentId, id); this.managed(worker, false);
+    worker.turnUsageStart = worker.usage ? structuredClone(worker.usage.total) : undefined;
+    const turn = await this.allow(() => this.backend.reviewSession(owner(parentId), id));
+    worker.threadId = turn.threadId; worker.turnId = turn.turnId; worker.state = turn.state; worker.output[turn.turnId] ??= []; this.store.save();
+    return structuredClone(worker);
+  }
   async approve(parentId: string, id: string, approvalId: string, decision: "accept" | "decline" | "cancel"): Promise<void> {
-    this.get(parentId, id); await this.allow(() => this.backend.decideApproval(owner(parentId), approvalId, decision));
+    const worker = this.get(parentId, id); await this.allow(() => this.backend.decideApproval(owner(parentId), approvalId, decision));
+    worker.approvals = (worker.approvals ?? []).filter(item => item.id !== approvalId);
+    if (worker.state === "waiting-approval") worker.state = "running";
+    this.store.save(); this.emit("changed", worker);
   }
   acknowledge(parentId: string, id: string, turnId: string): Report {
     const report = this.report(parentId, id, turnId); report.acknowledgedAt ??= new Date().toISOString(); this.store.save(); return structuredClone(report);
@@ -116,7 +180,7 @@ export class Workers extends EventEmitter {
     }
   }
   async reconcileAll(): Promise<void> { for (const worker of this.store.read().workers.filter(item => !item.closed)) await this.reconcile(worker); }
-  async close(): Promise<void> { for (const off of this.subscriptions.values()) off(); this.subscriptions.clear(); for (const off of this.guards.values()) off(); this.guards.clear(); }
+  async close(): Promise<void> { for (const off of this.subscriptions.values()) off(); this.subscriptions.clear(); for (const off of this.guards.values()) off(); this.guards.clear(); this.publicItems.clear(); }
 
   private report(parentId: string, id: string, turnId: string): Report {
     const report = this.get(parentId, id).reports.find(item => item.turnId === turnId);
@@ -133,15 +197,57 @@ export class Workers extends EventEmitter {
     else if (event.type === "turn.output") (worker.output[event.turnId] ??= []).push(event.item);
     else if (event.type === "turn.state") {
       worker.threadId = event.turn.threadId; worker.turnId = event.turn.turnId; worker.state = event.turn.state === "unknown" ? "unknown" : "idle";
-      if (terminal.has(event.turn.state)) this.complete(worker, event.turn.turnId, event.turn.state as Report["status"], event.finalOutput);
-    } else if (event.type === "approval.requested") worker.state = "waiting-approval";
+      if (event.operation === "compact") {
+        const operation = worker.compactions?.find(item => item.turnId === null || item.turnId === event.turn.turnId);
+        if (operation && terminal.has(event.turn.state)) { operation.turnId = event.turn.turnId; operation.status = event.turn.state as Compaction["status"]; operation.error = event.error; }
+      } else if (terminal.has(event.turn.state)) this.complete(worker, event.turn.turnId, event.turn.state as Report["status"], event.finalOutput, event.error);
+    } else if (event.type === "approval.requested") {
+      worker.state = "waiting-approval";
+      worker.approvals = [...(worker.approvals ?? []).filter(item => item.id !== event.request.requestId), { id: event.request.requestId, method: event.request.method, params: event.request.params }];
+    } else if (event.type === "usage.updated") {
+      const usage = parseUsage(event.usage), previous = worker.rawUsageTotal ?? worker.usage?.total;
+      if (worker.usageResetPending && usage.total.totalTokens !== null && previous?.totalTokens != null && usage.total.totalTokens < previous.totalTokens) {
+        worker.usageOffset = structuredClone(worker.usage!.total); worker.usageResetPending = false;
+      }
+      worker.rawUsageTotal = structuredClone(usage.total);
+      if (worker.usageOffset) usage.total = Object.fromEntries(Object.entries(usage.total).map(([key, value]) => {
+        const offset = worker.usageOffset![key as keyof typeof worker.usageOffset];
+        return [key, value !== null && offset !== null ? value + offset : null];
+      })) as typeof usage.total;
+      worker.usage = usage;
+    }
+    else if (event.type === "thread.notification") this.conversationEvent(worker, event.method, event.params);
     this.store.save(); this.emit("changed", worker);
   }
-  private complete(worker: Worker, turnId: string, status: Report["status"], finalOutput?: string): void {
+  private conversationEvent(worker: Worker, method: string, params: unknown): void {
+    const value = params && typeof params === "object" ? params as Record<string, any> : {};
+    const items = this.publicItems.get(worker.id) ?? new Map<string, ConversationItem>();
+    this.publicItems.set(worker.id, items);
+    if ((method === "item/started" || method === "item/completed") && value.item && value.turnId) {
+      const item = conversation({ turns: [{ id: value.turnId, items: [{ ...value.item, status: value.item.status ?? (method === "item/started" ? "inProgress" : "completed") }] }] }).items[0];
+      if (item) { items.set(item.id, item); this.emit("conversation", worker.parentId, worker.id, { type: "item", item }); }
+    } else if ((method === "item/agentMessage/delta" || method === "item/commandExecution/outputDelta") && typeof value.itemId === "string" && typeof value.turnId === "string" && typeof value.delta === "string") {
+      const role = method.includes("agentMessage") ? "assistant" : "tool";
+      const previous = items.get(value.itemId) ?? { id: value.itemId, turnId: value.turnId, role, text: "" };
+      const item = { ...previous, text: previous.text + value.delta, ...(role === "tool" ? { output: (previous.output ?? "") + value.delta } : {}) };
+      items.set(item.id, item); this.emit("conversation", worker.parentId, worker.id, { type: "item", item });
+    } else if ((method === "turn/started" || method === "turn/completed") && value.turn) {
+      this.emit("conversation", worker.parentId, worker.id, { type: "turn", turn: conversation({ turns: [value.turn] }).turns?.[0] });
+    }
+  }
+  private complete(worker: Worker, turnId: string, status: Report["status"], finalOutput?: string, error?: string): void {
     if (worker.reports.some(report => report.turnId === turnId)) { delete worker.output[turnId]; return; }
     const result = finalOutput ?? finalText(worker.output[turnId] ?? []);
-    const report: Report = { workerId: worker.id, threadId: worker.threadId, turnId, status, result: result || (status === "completed" ? "Result missing from terminal output." : `Execution ${status}.`), createdAt: new Date().toISOString(), acceptance: "pending" };
-    worker.reports.push(report); delete worker.output[turnId]; this.store.save(); this.emit("report", report, worker.parentId);
+    const report: Report = { workerId: worker.id, threadId: worker.threadId, turnId, status, result, createdAt: new Date().toISOString(), acceptance: "pending", usage: structuredClone(worker.usage),
+      ...(!result && status === "completed" ? { protocolError: "Result missing: completed turn has no deliverable final_answer; ask the same worker to supply its result without repeating the task" } : {}),
+      ...(error ? { error } : {}) };
+    if (worker.turnUsageStart && worker.usage) report.turnUsage = Object.fromEntries(Object.entries(worker.usage.total).map(([key, value]) => {
+      const start = worker.turnUsageStart![key as keyof typeof worker.turnUsageStart];
+      return [key, typeof value === "number" && typeof start === "number" && value >= start ? value - start : null];
+    })) as unknown as NonNullable<typeof worker.turnUsageStart>;
+    delete worker.turnUsageStart;
+    worker.reports.push(report); delete worker.output[turnId]; this.store.save();
+    if (worker.owner !== "user") this.emit("report", report, worker.parentId);
   }
   private guard(request: BackendMutation): void {
     if (this.permitted.getStore()) return;
@@ -163,7 +269,7 @@ function finalText(items: readonly unknown[]): string {
       if (type.includes("agent") || type.includes("message")) { const text = textValue(value.text ?? value.content); if (text) return text; }
     }
   }
-  return items.filter(item => typeof item === "string").join("");
+  return "";
 }
 function textValue(value: unknown): string {
   if (typeof value === "string") return value;

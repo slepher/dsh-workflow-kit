@@ -2,13 +2,13 @@ import { join } from "node:path";
 import type { ResolvedRole, Role } from "./types.js";
 
 export const ROLES: readonly Role[] = [
-  { name: "planner", description: "Planner for progressive generations and executable contracts.", model: "gpt-6-astra", effort: "high", protocol: "planner.md", implementation: false },
-  { name: "reviewer", description: "Independent reviewer for contract-bound candidates.", model: "gpt-5.6-sol", effort: "high", protocol: "reviewer.md", implementation: false },
-  { name: "context_collector", description: "Read-only repository evidence collector.", model: "gpt-5.6-luna", effort: "high", protocol: "context-collector.md", implementation: false },
-  { name: "def_coding_worker", description: "Default implementation and unit-test worker.", model: "gpt-5.6-luna", effort: "medium", protocol: "def-coding-worker.md", implementation: true },
-  { name: "sup_coding_worker", description: "Higher-capability implementation worker.", model: "gpt-5.6-sol", effort: "medium", protocol: "sup-coding-worker.md", implementation: true },
-  { name: "evidence_runner", description: "Mechanical evidence runner without source edits.", model: "gpt-5.6-luna", effort: "medium", protocol: "evidence-runner.md", implementation: false },
-  { name: "full_tester", description: "Independent full-validation worker.", model: "gpt-5.6-luna", effort: "medium", protocol: "full-tester.md", implementation: false },
+  { name: "planner", description: "Planner for progressive generations and executable contracts.", model: "gpt-6-astra", effort: "high", protocol: "planner.md", implementation: false, skills: ["worker-execution", "role-planner", "implementation-simplicity"] },
+  { name: "reviewer", description: "Independent reviewer for contract-bound candidates.", model: "gpt-5.6-sol", effort: "high", protocol: "reviewer.md", implementation: false, skills: ["worker-execution", "role-reviewer", "implementation-simplicity"] },
+  { name: "context_collector", description: "Read-only repository evidence collector.", model: "gpt-5.6-luna", effort: "high", protocol: "context-collector.md", implementation: false, skills: ["worker-execution", "role-context-collector"] },
+  { name: "def_coding_worker", description: "Default implementation and unit-test worker.", model: "gpt-5.6-luna", effort: "medium", protocol: "def-coding-worker.md", implementation: true, skills: ["worker-execution", "role-def-coding-worker", "implementation-simplicity"] },
+  { name: "sup_coding_worker", description: "Higher-capability implementation worker.", model: "gpt-5.6-sol", effort: "medium", protocol: "sup-coding-worker.md", implementation: true, skills: ["worker-execution", "role-sup-coding-worker", "implementation-simplicity"] },
+  { name: "evidence_runner", description: "Mechanical evidence runner without source edits.", model: "gpt-5.6-luna", effort: "medium", protocol: "evidence-runner.md", implementation: false, skills: ["worker-execution", "role-evidence-runner"] },
+  { name: "full_tester", description: "Independent full-validation worker.", model: "gpt-5.6-luna", effort: "medium", protocol: "full-tester.md", implementation: false, skills: ["worker-execution", "role-full-tester"] },
 ];
 
 export function listRoles(): readonly Role[] { return ROLES; }
@@ -19,8 +19,16 @@ export function resolveRole(name: string, workflowSkillDir: string, implementati
   if (!workflowSkillDir) throw new Error("workflowSkillDir is required for role execution");
   const roleProtocolPath = join(workflowSkillDir, "references", "roles", role.protocol);
   const standard = implementationStandardDir ?? join(workflowSkillDir, "..", "audit-implementation-simplicity");
-  const developerInstructions = `${WORKER_EXECUTION}\n\n${ROLE_INSTRUCTIONS[role.name]}\n\nFor managed workflow assignments, read the complete role protocol at ${roleProtocolPath}. If it is absent, unreadable, or names another role, return Status: role_protocol_blocked and stop.` +
-    (role.implementation ? `\n\nImplementation standard: ${join(standard, "SKILL.md")}; load only for the modes named in the role protocol.` : "");
+  const prompts: Record<string, string> = {
+    "worker-execution": WORKER_EXECUTION,
+    [`role-${role.name.replaceAll("_", "-")}`]: `${ROLE_INSTRUCTIONS[role.name]}\n\nFor managed workflow assignments, read the complete role protocol at ${roleProtocolPath}. If it is absent, unreadable, or names another role, return Status: role_protocol_blocked and stop.`,
+    "implementation-simplicity": `Implementation standard: ${join(standard, "SKILL.md")}; load only for the modes named in the role protocol.`,
+  };
+  const developerInstructions = (role.skills ?? []).map(skill => {
+    const prompt = prompts[skill];
+    if (!prompt) throw new Error(`Unknown plugin prompt skill: ${skill}`);
+    return prompt;
+  }).join("\n\n");
   return { ...role, developerInstructions };
 }
 
