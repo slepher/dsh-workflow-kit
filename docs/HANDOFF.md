@@ -38,6 +38,28 @@ The package exports `.` and `./client`, publishes `lib`, docs, scripts,
 client row and Host module patch both identify `dsh-workflow-kit`. The package
 depends on `dsh-codex-kit-backend`, not the Codex browser/Host package.
 
+The dependency is the published-version contract
+`dsh-codex-kit-backend@0.1.0`; neither the manifest nor lock points at a source
+checkout, temporary directory, or tarball. Before publication, local candidate
+validation uses an npm workspace containing the backend package rather than
+changing that consumer contract.
+
+## Stage 4 verification
+
+On 2026-09-11, a clean combined source workspace with repository `lib`,
+`node_modules`, Git metadata, and DSH state removed generated a standard lock,
+ran `npm ci`, built backend → Codex → workflow, and passed the full workflow
+suite (29 tests). The fixture pinned the complete DSH dependency set to
+`0.1.5-rc.1` and used no peer-dependency bypass.
+
+`npm run pack:check` packed backend, Codex, and workflow candidates, installed
+all three with fixed rc.1 DSH and React peers, imported every public Host entry,
+and materialized both browser factories. An earlier unpinned fixture selected
+an rc.2 optional peer and failed; the checked fixture now rejects any such DSH
+drift. The independently observed `workflow.test.mjs` failure was specifically
+`spawnSync git EPERM` under restricted process permissions; the same full test
+suite passed with normal child-process permissions.
+
 ## Stage 5 still required
 
 Build, tests, factory materialization, and pack checks do not establish a real

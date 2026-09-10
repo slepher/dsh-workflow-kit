@@ -10,3 +10,9 @@ test("joint dev builds Codex first and launches one PATH dsh host", () => {
   assert.ok(ready >= 0 && workflowBuild > ready && host > workflowBuild);
   assert.equal(source.match(/start\("dsh"/g)?.length, 1);
 });
+
+test("pack check installs all three tarballs without legacy peer bypass", () => {
+  const source = readFileSync(new URL("../scripts/pack-check.mjs", import.meta.url), "utf8");
+  for (const name of ["dsh-codex-kit-backend", "dsh-codex-kit", "dsh-workflow-kit"]) assert.match(source, new RegExp(`"${name}"`));
+  assert.doesNotMatch(source, /legacy-peer-deps/);
+});

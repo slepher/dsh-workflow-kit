@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "dev": "node scripts/dev.mjs",
+    "pack:check": "node scripts/pack-check.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
@@ -83,7 +84,6 @@
     "@types/node": "^24.0.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.7",
-    "dsh-codex-kit-backend": "file:../dsh-codex-kit/packages/dsh-codex-kit-backend",
     "esbuild": "^0.25.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
