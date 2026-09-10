@@ -50,6 +50,6 @@ await new Promise((ready, reject) => {
 const build = spawnSync("npm", ["run", "build"], { stdio: "inherit", shell: process.platform === "win32" });
 if ((build.status ?? 1) !== 0) await close(build.status ?? 1);
 start(process.execPath, ["scripts/watch.mjs"]);
-const hostArgs = ["--profile", profile, "--no-open", "--port", "0", ...patchArgs];
+const hostArgs = ["--profile", profile, ...patchArgs, "--no-open", "--port", "0"];
 start("dsh", hostArgs);
 console.log(`dsh-workflow-kit dev processes started (profile ${profile}; Codex ${codex})`);

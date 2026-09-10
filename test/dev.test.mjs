@@ -15,13 +15,21 @@ test("joint dev builds Codex first and launches one PATH dsh host", () => {
   assert.match(source, /const patch = resolve\(value\)/);
   assert.match(source, /statSync\(patch\)\.isFile\(\)/);
   assert.match(source, /patchArgs\.push\("--patch", patch\)/);
-  assert.match(source, /\["--profile", profile, "--no-open", "--port", "0", \.\.\.patchArgs\]/);
+  assert.match(source, /const hostArgs = \["--profile", profile, \.\.\.patchArgs, "--no-open", "--port", "0"\]/);
 });
 
 test("joint dev rejects a patch without a value before starting children", () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/dev.mjs", import.meta.url)), "--patch"], { encoding: "utf8" });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /--patch requires a file path/);
+});
+
+test("PATH dsh parses patch before pass-through app arguments", () => {
+  const patch = fileURLToPath(new URL("../cordis.patch.yml", import.meta.url));
+  const result = spawnSync("dsh", ["--patch", patch, "--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--patch <path>/);
+  assert.doesNotMatch(result.stderr, /unknown option/);
 });
 
 test("pack check installs all three tarballs without legacy peer bypass", () => {
