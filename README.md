@@ -1,6 +1,6 @@
 # dsh-workflow-kit
 
-`dsh-workflow-kit` adds persistent Codex workers and managed workflow execution to DSH. It is a headless consumer of the public `dsh-codex-kit-backend` API; it does not depend on the Codex conversation UI.
+`dsh-workflow-kit` adds persistent Codex workers, the visual worker sidebar, and managed workflow execution to DSH. It consumes the public `dsh-codex-kit-backend` API and keeps the existing New, Resume, private/link, transcript, approval, report, and model controls.
 
 ## Runtime configuration
 
@@ -29,7 +29,7 @@ npm run build
 npm test
 ```
 
-The package ships compiled host/client entries, `cordis.patch.yml`, and `scripts/workflowctl.py`. Its build reuses the adjacent Codex checkout's installed esbuild to emit the rc.1 browser closure registration; install both repositories before building. Backend code changes require an explicit restart after running tasks are safely stopped; unloading this workflow tool/UI package does not close backend processes.
+The package ships compiled host/client entries, `cordis.patch.yml`, and `scripts/workflowctl.py`. Its build uses its own installed esbuild to emit the rc.1 browser closure registration. Backend code changes require an explicit restart after running tasks are safely stopped; unloading this workflow tool/UI package does not close backend processes.
 
 ## Development
 

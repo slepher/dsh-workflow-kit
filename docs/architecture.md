@@ -21,5 +21,6 @@ Repeated terminal events produce one report. Delivery is at least once and ack
 is associated with report identity. Notification, query, ack, acceptance, and
 release remain separate state transitions.
 
-The package can execute without a browser. Its optional client submits user
-actions through host APIs and never mutates acceptance state directly.
+The Host tools can execute without a browser. The packaged client is the full
+visual worker UI; it submits user actions through authenticated Host APIs and
+never mutates acceptance state directly.

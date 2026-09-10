@@ -9,16 +9,12 @@ const profile = option("--profile") ?? process.env.DSH_PROFILE ?? "workflow-dev"
 const codex = resolve(option("--codex-kit") ?? process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
 const dshHome = resolve(process.env.DSH_HOME ?? join(homedir(), ".dsh"));
 const profileManifest = join(dshHome, "profiles", profile, "package.json");
-const devEnv = { ...process.env, DSH_CODEX_KIT_CHECKOUT: codex };
 
 if (!existsSync(join(codex, "scripts", "watch.mjs"))) throw new Error(`Codex watch entry not found: ${codex}`);
 if (!existsSync(profileManifest)) throw new Error(`DSH profile ${profile} is not prepared. Follow README.md once before npm run dev.`);
 const kitBundles = ["dsh-codex-kit-backend", "dsh-codex-kit", "dsh-workflow-kit"];
 const bundles = JSON.parse(readFileSync(profileManifest, "utf8"))?.dsh?.profile?.bundles;
 if (bundles?.filter(bundle => kitBundles.includes(bundle)).join("\0") !== kitBundles.join("\0")) throw new Error(`DSH profile ${profile} must load backend, UI, then workflow exactly once.`);
-
-const build = spawnSync("npm", ["run", "build"], { stdio: "inherit", shell: process.platform === "win32", env: devEnv });
-if ((build.status ?? 1) !== 0) process.exit(build.status ?? 1);
 
 const children = new Set(); let closing = false;
 const start = (command, argv, options = {}) => {
@@ -42,6 +38,8 @@ await new Promise((ready, reject) => {
   codexWatch.once("exit", code => reject(new Error(`Codex watcher exited before ready (${code ?? "signal"})`)));
 });
 
-start(process.execPath, ["scripts/watch.mjs"], { env: devEnv });
+const build = spawnSync("npm", ["run", "build"], { stdio: "inherit", shell: process.platform === "win32" });
+if ((build.status ?? 1) !== 0) await close(build.status ?? 1);
+start(process.execPath, ["scripts/watch.mjs"]);
 start("dsh", ["--profile", profile, "--no-open", "--port", "0"]);
 console.log(`dsh-workflow-kit dev processes started (profile ${profile}; Codex ${codex})`);

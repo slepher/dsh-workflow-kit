@@ -10,7 +10,17 @@ const require = createRequire(import.meta.url);
 test("exports the workflow boundary", () => {
   assert.equal(WORKFLOW_PLUGIN_ID, "dsh-workflow-kit");
   assert.equal(WORKFLOW_OWNED_STATE.includes("acceptance"), true);
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(manifest.exports).sort(), [".", "./client"]);
+  assert.ok(manifest.files.includes("lib") && manifest.files.includes("cordis.patch.yml"));
+  assert.equal(manifest.dsh.client.platform, "web");
+  assert.ok(Array.isArray(manifest.dsh.client.inject));
+  assert.equal(manifest.dependencies["dsh-codex-kit-backend"], "0.1.0");
+  assert.equal("dsh-codex-kit" in manifest.dependencies, false);
+  const patch = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
+  assert.match(patch, /id: dsh-workflow-kit\s+name: dsh-workflow-kit/);
   const client = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+  assert.doesNotMatch(client, /require\(["']dsh-codex-kit(?:-backend)?/);
   const registrations = [];
   const document = { createElement: () => ({ remove() {} }), head: { append() {} } };
   runInNewContext(client, { document, window: { __ModuleLoader__: { load: value => registrations.push(value) } } });

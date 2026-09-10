@@ -1,10 +1,8 @@
-import { createRequire } from "node:module";
+import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const codex = resolve(root, process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
-const { build } = createRequire(join(codex, "package.json"))("esbuild");
 
 await build({
   entryPoints: [join(root, "src/client.tsx")],
