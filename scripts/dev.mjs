@@ -1,100 +1,89 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import { composeEntries, loadOptionalPatches, loadOverlayPatches, loadProfile } from "@deepseek-ai/dsh-app-boot";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
-const args = process.argv.slice(2);
+const root = fileURLToPath(new URL("../", import.meta.url)), args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
-const profile = option("--profile") ?? process.env.DSH_PROFILE ?? "workflow-dev";
 const codex = resolve(option("--codex-kit") ?? process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
-const patchArgs = [];
-for (let index = 0; index < args.length; index++) {
-  if (args[index] !== "--patch") continue;
-  const value = args[++index];
-  if (!value || value.startsWith("--")) throw new Error("--patch requires a file path");
-  const patch = resolve(value);
-  if (!existsSync(patch) || !statSync(patch).isFile()) throw new Error(`DSH patch file not found: ${patch}`);
-  patchArgs.push("--patch", patch);
-}
-const dshHome = resolve(process.env.DSH_HOME ?? join(homedir(), ".dsh"));
+if (!existsSync(join(codex, "scripts/dev-host.mjs")) || !existsSync(join(codex, "scripts/watch.mjs"))) throw new Error(`Codex dev entries not found: ${codex}`);
+const host = await import(pathToFileURL(join(codex, "scripts/dev-host.mjs")));
+const { profile, patches, dshHome } = host.parseDevOptions(args);
 const profileManifest = join(dshHome, "profiles", profile, "package.json");
-
-if (!existsSync(join(codex, "scripts", "watch.mjs"))) throw new Error(`Codex watch entry not found: ${codex}`);
 if (!existsSync(profileManifest)) throw new Error(`DSH profile ${profile} is not prepared. Follow README.md once before npm run dev.`);
-const kitBundles = ["dsh-codex-kit-backend", "dsh-codex-kit", "dsh-workflow-kit"];
+const expectedBundles = ["dsh-codex-kit-backend", "dsh-codex-kit", "dsh-workflow-kit"];
 const bundles = JSON.parse(readFileSync(profileManifest, "utf8"))?.dsh?.profile?.bundles;
-if (bundles?.filter(bundle => kitBundles.includes(bundle)).join("\0") !== kitBundles.join("\0")) throw new Error(`DSH profile ${profile} must load backend, UI, then workflow exactly once.`);
+if (bundles?.filter(bundle => expectedBundles.includes(bundle)).join("\0") !== expectedBundles.join("\0")) throw new Error(`DSH profile ${profile} must load backend, UI, then workflow exactly once.`);
 
-const externalHost = () => {
-  if (process.platform !== "linux") return;
-  const installAnchor = createRequire(import.meta.url).resolve("@deepseek-ai/dsh/package.json");
-  const loaded = loadProfile("dsh", profile, installAnchor, dshHome);
-  const homePatches = loadOptionalPatches("dsh", join(dshHome, "cordis.patch.yml")) ?? [];
-  const overlays = patchArgs.filter(argument => argument !== "--patch").map(path => loadOverlayPatches("dsh", path));
-  const entries = composeEntries([...loaded.layers.map(layer => layer.patches), loaded.patches, homePatches, ...overlays]);
-  const backend = entries.find(entry => entry.id === "dsh-codex-kit-backend");
-  const stateDir = backend?.config?.stateDir;
-  if (typeof stateDir !== "string" || !isAbsolute(stateDir)) throw new Error(`DSH profile ${profile} must configure an absolute backend stateDir.`);
-  const pidFile = join(stateDir, "owner.lock", "pid");
-  let text;
-  try {
-    text = readFileSync(pidFile, "utf8");
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
-  }
-  const pid = Number(text);
-  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid backend owner PID in ${pidFile}`);
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if (error?.code === "ESRCH") return;
-    throw new Error(`Cannot inspect backend owner pid ${pid}`, { cause: error });
-  }
-  let argv;
-  try {
-    argv = readFileSync(`/proc/${pid}/cmdline`).toString().split("\0").filter(Boolean);
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw new Error(`Cannot read backend owner pid ${pid} command line`, { cause: error });
-  }
-  const profileIndex = argv.indexOf("--profile");
-  if (profileIndex < 0 || argv[profileIndex + 1] !== profile) return;
-  if (!argv.some(argument => argument.split(/[\\/]/).at(-1) === "dsh" || /[\\/]@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js$/.test(argument))) return;
-  return pid;
-};
+const expectedRoots = [join(codex, "packages/dsh-codex-kit-backend/lib/host"), join(codex, "packages/dsh-codex-kit/lib"), join(root, "lib")];
+const effective = host.resolveDevHost({ profile, patches, dshHome, expectedRoots });
+let owner = host.inspectOwner(effective.stateDir, profile);
+const temp = mkdtempSync(join(tmpdir(), "dsh-workflow-kit-dev-")), overlay = join(temp, "hmr.patch.yml");
+const base = dirname(codex);
+writeFileSync(overlay, `- id: hmr\n  disabled: false\n  config:\n    base: ${JSON.stringify(base)}\n    root:\n${expectedRoots.map(path => `      - ${JSON.stringify(relative(base, path))}`).join("\n")}\n    ignored:\n      - "**/node_modules"\n      - "**/.*"\n    debounce: 100\n`);
 
 const children = new Set(); let closing = false;
-const start = (command, argv, options = {}) => {
+const stopped = Symbol("stopped");
+const barrier = () => { if (closing) throw stopped; };
+const start = (command, argv, options = {}, persistent = true) => {
+  barrier();
   const child = spawn(command, argv, { stdio: ["inherit", "pipe", "inherit"], shell: process.platform === "win32", ...options });
   children.add(child); child.stdout?.pipe(process.stdout);
-  child.once("exit", code => { children.delete(child); if (!closing) void close(code ?? 1); });
+  child.once("error", error => { if (!closing) { console.error(String(error)); void close(1); } });
+  child.once("exit", (code, signal) => { children.delete(child); if (persistent && !closing) void close(signal === "SIGINT" || signal === "SIGTERM" ? 0 : code ?? 1); });
   return child;
 };
+const waitExit = child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve(child.exitCode ?? 1) : new Promise(resolveExit => child.once("exit", code => resolveExit(code ?? 1)));
 const close = async code => {
   if (closing) return; closing = true;
   for (const child of children) child.kill("SIGINT");
-  await Promise.all([...children].map(child => new Promise(resolveExit => child.once("exit", resolveExit))));
-  process.exit(code);
+  await Promise.all([...children].map(waitExit)); rmSync(temp, { recursive: true, force: true }); process.exit(code);
 };
-process.once("SIGINT", () => void close(0)); process.once("SIGTERM", () => void close(0));
-
-const codexWatch = start(process.execPath, ["scripts/watch.mjs"], { cwd: codex });
-let buffered = "";
-await new Promise((ready, reject) => {
-  codexWatch.stdout.on("data", chunk => { buffered += chunk; if (buffered.includes("dsh-codex-kit watch ready")) ready(); });
-  codexWatch.once("exit", code => reject(new Error(`Codex watcher exited before ready (${code ?? "signal"})`)));
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => void close(0));
+process.once("exit", () => rmSync(temp, { recursive: true, force: true }));
+const ready = (child, marker) => new Promise((resolveReady, reject) => {
+  let buffered = "";
+  child.stdout.on("data", chunk => { buffered += chunk; if (buffered.includes(marker)) resolveReady(); });
+  child.once("exit", code => reject(new Error(`${marker} process exited before ready (${code ?? "signal"})`)));
 });
+const build = async cwd => {
+  const child = start("npm", ["run", "build"], { cwd }, false), code = await waitExit(child);
+  barrier();
+  if (code !== 0) throw new Error(`Initial build failed in ${cwd} (${code})`);
+};
 
-const build = spawnSync("npm", ["run", "build"], { stdio: "inherit", shell: process.platform === "win32" });
-if ((build.status ?? 1) !== 0) await close(build.status ?? 1);
-start(process.execPath, ["scripts/watch.mjs"]);
-const hostArgs = ["--profile", profile, ...patchArgs, "--no-open", "--port", "0"];
-let hostPid;
-try { hostPid = externalHost(); }
-catch (error) { console.error(error); await close(1); }
-if (hostPid === undefined) start("dsh", hostArgs);
-else console.log(`Reusing dsh Host pid ${hostPid} for profile ${profile}`);
-console.log(`dsh-workflow-kit dev processes started (profile ${profile}; Codex ${codex})`);
+try {
+  const assertHmr = value => {
+    if (value.missingRoots.length || value.extraRoots.length || value.duplicateRoots.length) throw new Error(`Invalid HMR roots; missing: ${value.missingRoots.join(", ") || "none"}; extra: ${value.extraRoots.join(", ") || "none"}; duplicate: ${value.duplicateRoots.join(", ") || "none"}`);
+  };
+  if (owner !== undefined) {
+    assertHmr(effective);
+    host.assertBaseline(codex, ["packages/dsh-codex-kit-backend/lib/index.js", "packages/dsh-codex-kit-backend/lib/host/index.js", "packages/dsh-codex-kit/lib/index.js", "packages/dsh-codex-kit/lib/client.js"]);
+    host.assertBaseline(root, ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js"]);
+  } else {
+    const launched = host.resolveDevHost({ profile, patches: [...patches, overlay], dshHome, expectedRoots });
+    assertHmr(launched);
+    if (launched.stateDir !== effective.stateDir) throw new Error("HMR overlay changed backend stateDir");
+    await build(codex); barrier(); await build(root); barrier();
+  }
+  const codexWatch = start(process.execPath, ["scripts/watch.mjs", "--no-initial-build"], { cwd: codex });
+  await ready(codexWatch, "dsh-codex-kit watch ready"); barrier();
+  const workflowWatch = start(process.execPath, ["scripts/watch.mjs", "--no-initial-build", "--codex-kit", codex], { cwd: root });
+  await ready(workflowWatch, "dsh-workflow-kit watch ready"); barrier();
+  if (owner === undefined) {
+    barrier();
+    owner = host.inspectOwner(effective.stateDir, profile);
+    barrier();
+    if (owner !== undefined) assertHmr(effective);
+    if (owner === undefined) start("dsh", ["--profile", profile, ...patches.flatMap(path => ["--patch", path]), "--patch", overlay, "--no-open", "--port", "0"], { cwd: root });
+  }
+  if (owner === undefined) console.log(`dsh-workflow-kit dev processes started (profile ${profile}; Codex ${codex}; port 0)`);
+  else console.log(`Reusing dsh Host pid ${owner} for profile ${profile} (${effective.stateDir})`);
+} catch (error) {
+  if (error === stopped) { /* cleanup already owns exit */ }
+  else {
+  console.error(error instanceof Error ? error.message : String(error));
+  await close(1);
+  }
+}

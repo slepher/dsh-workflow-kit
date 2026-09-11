@@ -1,6 +1,6 @@
 # dsh-workflow-kit
 
-`dsh-workflow-kit` adds persistent Codex workers, the visual worker sidebar, and managed workflow execution to DSH. It consumes the public `dsh-codex-kit-backend` API and keeps the existing New, Resume, private/link, transcript, approval, report, and model controls.
+`dsh-workflow-kit` adds managed workflow execution, roles, prompts, skills, and CLI support to DSH. It consumes worker and report facts from the public `dsh-codex-kit-backend` API; the Codex worker UI belongs to `dsh-codex-kit`.
 
 ## Runtime configuration
 
@@ -36,7 +36,7 @@ npm's `--no-save` mode, then builds backend → Codex. It does not rewrite eithe
 repository's manifest or lock. Once `dsh-codex-kit-backend@0.1.0` is published,
 a standalone workflow consumer can use ordinary `npm ci` instead.
 
-The package ships compiled host/client entries, `cordis.patch.yml`, and `scripts/workflowctl.py`. Its build uses its own installed esbuild to emit the rc.1 browser closure registration. Backend code changes require an explicit restart after running tasks are safely stopped; unloading this workflow tool/UI package does not close backend processes.
+The package ships its compiled Host entry, `cordis.patch.yml`, and `scripts/workflowctl.py`. Backend code changes require an explicit restart after running tasks are safely stopped; unloading Workflow does not close backend processes.
 
 ## Development
 
@@ -50,9 +50,11 @@ dsh plugin --profile workflow-dev add \
   link:/absolute/path/to/dsh-workflow-kit
 ```
 
-After the one-time `npm run prepare:local`, one command builds and watches both
-checkouts. It reuses a live Host already running the same profile, or starts one
-Host when the profile has no matching live owner:
+After the one-time `npm run prepare:local`, one command owns the joint development
+entry. It validates the effective profile and backend owner before writing any
+artifact. A valid live Host uses both watchers with `--no-initial-build`; with no
+owner it builds Codex then Workflow, waits for both watchers, and starts one
+official Host on port `0`:
 
 ```bash
 npm run dev -- --profile workflow-dev
@@ -68,8 +70,8 @@ npm run dev -- --profile workflow-dev \
 
 Each `--patch` must name an existing file. The dev command resolves it to an
 absolute path and forwards the repeatable pairs to its single PATH `dsh` Host.
-This temporary overlay does not edit profile bundles or change either HMR
-watcher. A reused Host remains externally owned and is never stopped by dev
-cleanup.
+The ordered overlays participate in the same owner/stateDir check. A reused Host
+must already expose the backend Host, Codex, and Workflow HMR roots and remains
+externally owned; dev cleanup never stops it.
 
-The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. The script uses only `dsh` on PATH and waits for the Codex watcher's initial-build readiness line before starting the workflow watcher. Workflow source changes rerun the TypeScript plus closure build so client HMR always receives a registered `dsh-workflow-kit` artifact. Ctrl+C stops its two watchers and only a Host it started itself.
+The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. Workflow changes build in staging and atomically replace only W `lib`; build failure, shutdown, or a backend core change leaves live output untouched. Ctrl+C waits for its two owned watchers and stops only a Host it started itself.
