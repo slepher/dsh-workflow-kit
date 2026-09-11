@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import type { WorkflowWorkers } from './workers.js'
+import type { Report } from 'dsh-codex-kit-backend/browser-types'
 import { resolveRole, ROLES } from './roles.js'
-import type { Boundary, Effort, Report, ResolvedRole } from './types.js'
+import type { Boundary, Effort, ResolvedRole } from './types.js'
 
 const exec = promisify(execFile)
 type Task = { network?: 'disabled'|'loopback'; lane?: boolean; cwd?: string; reads?: string[]; writes?: string[]; reports?: string[]; ports?: string[]; id: string; revision: number; role: string; depends: string[]; owned: string[]; resources: string[]; inputs: string[]; review: string; text: string }

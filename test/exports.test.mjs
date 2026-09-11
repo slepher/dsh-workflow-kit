@@ -9,7 +9,7 @@ test("exports the workflow boundary", () => {
   assert.deepEqual(WORKFLOW_OWNED_STATE, ["tasks", "attempts", "lanes", "reviews", "integration", "delivery", "release"]);
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
-  assert.deepEqual(Object.keys(manifest.exports).sort(), [".", "./client"]);
+  assert.deepEqual(Object.keys(manifest.exports), ["."]);
   assert.ok(manifest.files.includes("lib") && manifest.files.includes("cordis.patch.yml"));
   assert.equal("client" in manifest.dsh, false, "Workflow has no browser activation row during B4p");
   assert.equal(manifest.dependencies["dsh-codex-kit-backend"], "0.1.0");
@@ -17,6 +17,8 @@ test("exports the workflow boundary", () => {
   assert.doesNotMatch(JSON.stringify(manifest) + lock, /file:\.\.\/dsh-codex-kit|\/tmp\/|\/home\//);
   assert.equal(JSON.parse(lock).packages["node_modules/dsh-codex-kit-backend"].version, "0.1.0");
   assert.equal("dsh-codex-kit" in manifest.dependencies, false);
+  assert.equal("react" in manifest.peerDependencies, false);
+  assert.equal("@deepseek-ai/dsh-client-connection" in manifest.peerDependencies, false);
   const patch = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
   assert.match(patch, /id: dsh-workflow-kit\s+name: dsh-workflow-kit/);
 });

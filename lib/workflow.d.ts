@@ -60,7 +60,7 @@ export declare class Workflow {
         tasks: {
             task: string;
             attempt: number;
-            state: "accepted" | "running" | "unknown" | "reserved" | "candidate" | "delivered" | "archived" | "released" | "blocked";
+            state: "running" | "unknown" | "accepted" | "reserved" | "candidate" | "delivered" | "archived" | "released" | "blocked";
             supersededRevision: number | undefined;
             workerId: string;
             turnId: string | undefined;
