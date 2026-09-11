@@ -5,7 +5,7 @@ import { join, isAbsolute, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import type { Workers } from './workers.js'
+import type { WorkflowWorkers as Workers } from './workers.js'
 import { resolveRole, ROLES } from './roles.js'
 import type { Boundary, Effort, Report, ResolvedRole } from './types.js'
 
@@ -47,6 +47,7 @@ export class Workflow {
     this.syncLanes()
   }
   private save() {
+    this.workers.assertIdentity()
     for(const run of this.runs) {
       run.planSnapshot=join(this.directory,'plans',run.id,`revision-${run.plan.revision}.json`)
       if(!existsSync(run.planSnapshot)) {
@@ -60,9 +61,12 @@ export class Workflow {
   }
   private syncLanes() { this.workers.store.read().lanes=[...new Map(this.runs.flatMap(run=>run.lanes).map(lane=>[lane.path,lane])).values()] }
   private async python(...args: string[]) {
-    return JSON.parse((await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(Object.fromEntries(ROLES.map(r=>[r.name,{model:r.model,model_reasoning_effort:r.effort}])))} })).stdout)
+    this.workers.assertIdentity()
+    const result=await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(Object.fromEntries(ROLES.map(r=>[r.name,{model:r.model,model_reasoning_effort:r.effort}])))} })
+    this.workers.assertIdentity()
+    return JSON.parse(result.stdout)
   }
-  private async git(cwd: string, ...args: string[]) { return (await exec('git',['-C',cwd,...args],{maxBuffer:16*1024*1024})).stdout.trimEnd() }
+  private async git(cwd: string, ...args: string[]) { this.workers.assertIdentity();const result=await exec('git',['-C',cwd,...args],{maxBuffer:16*1024*1024});this.workers.assertIdentity();return result.stdout.trimEnd() }
   private async commit(repo: string, value: string) {
     if (!value || value.startsWith('-')) throw new Error('Invalid commit identity')
     return this.git(repo,'rev-parse','--verify',`${value}^{commit}`)
@@ -100,16 +104,16 @@ export class Workflow {
     return role
   }
   private async start(run: Run, id: string, role: ResolvedRole, cwd: string, name: string, text: string, boundary?: Boundary) {
-    this.capacity(run)
+    await this.capacity(run)
     await this.workers.create(run.parent,{id,name,cwd,role:role.name,model:role.model,effort:role.effort,managed:true,boundary})
-    const worker = this.workers.get(run.parent,id)
+    const worker = await this.workers.get(run.parent,id)
     if (worker.model!==role.model || worker.effort!==role.effort) throw new Error('Runtime model/effort differs from required role; task was not started')
     return this.workers.append(run.parent,id,text,true)
   }
-  private capacity(run: Run) {
+  private async capacity(run: Run) {
     const limit=run.plan.concurrency ?? 4
     const parents=new Set(this.runs.filter(r=>r.plan.repository===run.plan.repository).map(r=>r.parent))
-    const active=[...parents].flatMap(parent=>this.workers.list(parent)).filter(w=>w.state!=='idle')
+    const active=(await Promise.all([...parents].map(parent=>this.workers.list(parent)))).flat().filter(w=>w.state!=='idle')
     if (active.length>=limit) throw new Error(`Worker concurrency capacity ${limit} reached`)
   }
   private scoped(root: string, path: string) {
@@ -140,16 +144,16 @@ export class Workflow {
     }
     return ports
   }
-  private report(run: Run, id: string, turn?: string): Report {
-    const w = this.workers.get(run.parent,id)
+  private async report(run: Run, id: string, turn?: string): Promise<Report> {
+    const w = await this.workers.get(run.parent,id)
     if (w.state!=='idle') throw new Error('Worker execution is not confirmed idle')
     const report = w.reports.find(r=>r.turnId===(turn ?? w.turnId))
     if (!report || report.status!=='completed') throw new Error('A completed worker report is required')
     if (!report.result.trim()) throw new Error('Worker report has no deliverable result')
     return report
   }
-  private verdict(run: Run, review: Review) {
-    const report = this.report(run,review.worker,review.turn)
+  private async verdict(run: Run, review: Review) {
+    const report = await this.report(run,review.worker,review.turn)
     let value: any
     try { value = JSON.parse(report.result.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'')) } catch { throw new Error('Reviewer must return the requested JSON; continue that reviewer for correction') }
     const verdicts=review.purpose==='disposition'?['discard','needs-decision']:['passed','changes-required','needs-decision']
@@ -158,11 +162,11 @@ export class Workflow {
     const attempt=run.attempts.find(a=>a.review===review || a.integration?.review===review)!
     const directory=this.resultDirectory(run,attempt);mkdirSync(directory,{recursive:true,mode:0o700})
     writeFileSync(join(directory,review.target?'integration-review.md':'review.md'),report.result,{mode:0o600});this.save()
-    this.workers.accept(run.parent,review.worker,report.turnId,value.verdict==='passed'?'accepted':'changes-requested',true)
+    await this.workers.accept(run.parent,review.worker,report.turnId,value.verdict==='passed'?'accepted':'changes-requested',true)
     return value.verdict
   }
   private async review(run: Run, attempt: Attempt, integration?: Integration, disposition=false) {
-    this.capacity(run)
+    await this.capacity(run)
     const role = this.role(run.plan,'reviewer')
     const candidate = integration?.candidate ?? attempt.candidate!
     const review: Review = {worker:randomUUID(),candidate,input:attempt.base,...(integration?{target:integration.target}:{}),...(disposition?{purpose:'disposition' as const}:{})}
@@ -183,7 +187,7 @@ export class Workflow {
   }
   private summary(run: Run) {
     const accepted = new Set(run.attempts.filter(a=>!a.discarded&&['accepted','delivered','released'].includes(a.state)&&a.candidate&&a.task.revision===run.plan.tasks[a.task.id]?.revision).map(a=>a.task.id))
-    return {id:run.id,generation:run.plan.generation,revision:run.plan.revision,workflowSkillDir:this.skillRoot,file:join(this.directory,'workflow.json'),
+    return {id:run.id,generation:run.plan.generation,revision:run.plan.revision,workflowSkillDir:this.skillRoot,file:join(this.directory,'orchestration.json'),
       ready:Object.values(run.plan.tasks).filter(t=>!run.attempts.some(a=>a.task.id===t.id) && t.depends.every(d=>accepted.has(d))).map(t=>t.id),
       lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
   }
@@ -224,7 +228,7 @@ export class Workflow {
         for (const a of existing.attempts) if (a.state!=='released' && a.task.revision!==plan.tasks[a.task.id]?.revision) a.supersededRevision=plan.revision
         existing.plan=plan; this.save()
         for (const a of existing.attempts.filter(a=>a.supersededRevision===plan.revision)) {
-          const w=this.workers.list(parent).find(w=>w.id===a.worker)
+          const w=(await this.workers.list(parent)).find(w=>w.id===a.worker)
           if (w?.state==='running') await this.workers.interrupt(parent,w.id,w.turnId!,true)
         }
         return this.summary(existing)
@@ -239,7 +243,7 @@ export class Workflow {
     const a=this.attempt(run,input)
     if (input.action==='record-result') {
       if (!['running','candidate','unknown','blocked'].includes(a.state)) throw new Error(`Task is ${a.state}`)
-      const report=this.report(run,a.worker,a.turn)
+      const report=await this.report(run,a.worker,a.turn)
       if (input.result && !isAbsolute(input.result)) throw new Error('result must be an absolute retained report path')
       const directory=this.resultDirectory(run,a);mkdirSync(directory,{recursive:true,mode:0o700})
       const retained=join(directory,'result.md')
@@ -270,15 +274,15 @@ export class Workflow {
     } else if (input.action==='accept') {
       if (a.supersededRevision) throw new Error('Task contract was revised; retain the old result and use the revised attempt')
       if (a.state!=='candidate') throw new Error('Record the candidate first')
-      if (a.task.review==='independent' && (!a.review || this.verdict(run,a.review)!=='passed')) throw new Error('Independent candidate review has not passed')
-      const report=this.report(run,a.worker,a.turn)
-      this.workers.accept(parent,a.worker,report.turnId,'accepted',true)
+      if (a.task.review==='independent' && (!a.review || await this.verdict(run,a.review)!=='passed')) throw new Error('Independent candidate review has not passed')
+      const report=await this.report(run,a.worker,a.turn)
+      await this.workers.accept(parent,a.worker,report.turnId,'accepted',true)
       a.state='accepted';this.save()
     } else if (input.action==='integrate') { await this.integrate(run,a)
     } else if (input.action==='archive') {
       if (['accepted','delivered','released'].includes(a.state)) throw new Error('Accepted work needs planned disposition, not failed-attempt archival')
       if (input.processesStopped!==true) throw new Error('Confirm task-owned processes are stopped before archival')
-      const worker=this.workers.list(parent).find(w=>w.id===a.worker)
+      const worker=(await this.workers.list(parent)).find(w=>w.id===a.worker)
       if (worker && worker.state!=='idle') throw new Error('Resolve worker execution ownership before archival')
       const lane=run.lanes.find(l=>l.name===a.lane)
       if (lane) await this.clean(lane.path)
@@ -287,13 +291,13 @@ export class Workflow {
       if (!a.review || a.review.purpose!=='disposition' || a.review.candidate!==candidate) {
         if (a.review) (a.previousReviews??=[]).push(a.review)
         a.candidate=candidate;await this.review(run,a,undefined,true)
-      } else if (this.verdict(run,a.review)==='discard') {a.discarded=true;a.state='archived';this.save()}
+      } else if (await this.verdict(run,a.review)==='discard') {a.discarded=true;a.state='archived';this.save()}
       else throw new Error('Reviewer has not authorized retained archival')
     } else if (input.action==='resolve') {
       const integration=a.integration
       if (!integration?.review || !integration.conflict || integration.resolution) throw new Error('A conflicted integration and an unassigned reviewer correction are required')
-      if (this.verdict(run,integration.review)!=='changes-required') throw new Error('A reviewer correction decision is required; unresolved decisions return to planner/user')
-      this.capacity(run)
+      if (await this.verdict(run,integration.review)!=='changes-required') throw new Error('A reviewer correction decision is required; unresolved decisions return to planner/user')
+      await this.capacity(run)
       const id=randomUUID();integration.resolution=id;this.save()
       const artifacts=join(this.artifacts(run,a),'resolution',id);mkdirSync(artifacts,{recursive:true,mode:0o700})
       await this.start(run,id,this.role(run.plan,a.task.role),integration.path,`resolve ${a.task.id}`,
@@ -301,22 +305,22 @@ export class Workflow {
     } else if (input.action==='resolved') {
       const i=a.integration
       if (!i?.resolution || !i.conflict) throw new Error('No assigned conflict resolution')
-      const report=this.report(run,i.resolution)
+      const report=await this.report(run,i.resolution)
       await this.clean(i.path)
       const candidate=await this.commit(i.path,'HEAD')
       if (!await this.ancestor(i.path,i.target,candidate)||!await this.ancestor(i.path,i.source,candidate)) throw new Error('Resolution must retain both candidates')
       const allowed=[...await this.paths(i.path,a.base,i.source),...await this.paths(i.path,a.base,i.target)]
       if ((await this.paths(i.path,i.target,candidate)).some(p=>!allowed.includes(p))) throw new Error('Resolution changed unrelated files; return to planner')
-      this.workers.accept(parent,i.resolution,report.turnId,'accepted',true)
+      await this.workers.accept(parent,i.resolution,report.turnId,'accepted',true)
       if (i.review) (a.previousReviews??=[]).push(i.review)
       i.candidate=candidate;i.conflict=false;delete i.review;this.save();await this.review(run,a,i)
     } else if (input.action==='refresh-integration') {
       const old=a.integration
       if (!old || a.state!=='accepted') throw new Error('No pending integration to refresh')
       for (const id of [old.review?.worker,old.resolution].filter(Boolean) as string[]) {
-        const w=this.workers.get(parent,id)
+        const w=await this.workers.get(parent,id)
         if (w.state!=='idle') throw new Error('Wait for or explicitly interrupt the previous integration workers before refresh')
-        for (const r of w.reports) this.workers.acknowledge(parent,id,r.turnId)
+        for (const r of w.reports) await this.workers.acknowledge(parent,id,r.turnId)
         await this.workers.closeWorker(parent,id,false,true)
       }
       (a.previousIntegrations??=[]).push(old);delete a.integration;this.save()
@@ -330,10 +334,10 @@ export class Workflow {
       if (!id) throw new Error('No such reviewer')
       if (selected==='resolution' && !a.integration?.conflict) throw new Error('Resolution already retained; refresh integration for further changes')
       if (id===a.worker && !['running','candidate','unknown','blocked'].includes(a.state)) throw new Error('Accepted work requires a new planned attempt')
-      const w=this.workers.get(parent,id)
+      const w=await this.workers.get(parent,id)
       if (w.state==='running') await this.workers.steer(parent,id,w.turnId!,input.text!,true)
       else {
-        this.capacity(run)
+        await this.capacity(run)
         if (w.state!=='idle') throw new Error('Resume confirmed idle history before continuing')
         const next=await this.workers.append(parent,id,input.text!,true)
         if (id===a.worker) {a.turn=next.turnId??undefined;a.state='running';delete a.candidate;if(a.review)(a.previousReviews??=[]).push(a.review);delete a.review}
@@ -347,9 +351,9 @@ export class Workflow {
       if (lane) await this.clean(lane.path)
       if (a.integration) await this.clean(a.integration.path)
       for (const id of [a.worker,a.review?.worker,a.integration?.review?.worker,a.integration?.resolution,...(a.previousReviews??[]).map(r=>r.worker)].filter(Boolean) as string[]) {
-        const w=this.workers.list(parent).find(w=>w.id===id)
+        const w=(await this.workers.list(parent)).find(w=>w.id===id)
         if (!w) continue
-        if (w.reports.some(r=>!r.acknowledgedAt)) for (const r of w.reports) this.workers.acknowledge(parent,id,r.turnId)
+        if (w.reports.some(r=>!r.acknowledgedAt)) for (const r of w.reports) await this.workers.acknowledge(parent,id,r.turnId)
         await this.workers.closeWorker(parent,id,false,true)
       }
       if (lane) delete lane.owner;a.state='released';this.save()
@@ -367,7 +371,7 @@ export class Workflow {
     if (deps.some(d=>!d?.candidate)) throw new Error('Dependencies require accepted candidates')
     const active=this.runs.filter(r=>r.plan.repository===run.plan.repository).flatMap(r=>r.attempts.filter(a=>a.state!=='released'))
     if (active.some(a=>this.overlaps([...task.owned,...(task.writes??[])],[...a.task.owned,...(a.task.writes??[])])||task.resources.some(r=>a.task.resources.includes(r)))) throw new Error('Owned paths or exclusive resources remain occupied')
-    this.capacity(run)
+    await this.capacity(run)
     const role=this.role(run.plan,task.role)
     const base=await this.commit(run.plan.repository,input.base??run.plan.base)
     const allowed:string[]=[]
@@ -447,7 +451,7 @@ export class Workflow {
     if (!i.candidate) throw new Error('Integration preparation incomplete; preserve evidence and refresh')
     await this.clean(i.path)
     if (await this.commit(i.path,'HEAD')!==i.candidate) throw new Error('Integration worktree changed after candidate preparation; refresh the review')
-    if (i.review && this.verdict(run,i.review)!=='passed') throw new Error('Integration review has not passed')
+    if (i.review && await this.verdict(run,i.review)!=='passed') throw new Error('Integration review has not passed')
     // Serialize target mutation and recheck the exact reviewed target immediately before applying.
     if (await this.commit(repo,run.plan.delivery==='target-merge'?run.plan.target:'HEAD')!==i.target) throw new Error('Target advanced; review the new combination')
     await this.clean(repo)

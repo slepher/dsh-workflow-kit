@@ -7,26 +7,6 @@ import test from "node:test";
 import { executeWorkerAction, WorkflowStore, Workers } from "../lib/index.js";
 import { Backend } from "./backend.mjs";
 
-test("terminal reports survive a missed live event and ack remains separate from acceptance", async t => {
-  const stateDir = mkdtempSync(join(tmpdir(), "workflow-workers-")); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
-  const backend = new Backend(), store = new WorkflowStore(stateDir);
-  let workers = new Workers(backend, store, "/skills/codex-workflow");
-  const worker = await workers.create("parent", { name: "A", cwd: "/work" });
-  const running = await workers.append("parent", worker.id, "task");
-  await workers.close();
-  backend.complete("workflow:parent", worker.id, running.turnId, "exact final reply");
-  workers = new Workers(backend, new WorkflowStore(stateDir), "/skills/codex-workflow");
-  await workers.reconcileAll();
-  assert.equal(workers.pending("parent").length, 1);
-  assert.equal(workers.pending("parent")[0].result, "exact final reply");
-  workers.acknowledge("parent", worker.id, running.turnId);
-  assert.equal(workers.get("parent", worker.id).reports[0].acceptance, "pending");
-  workers.accept("parent", worker.id, running.turnId, "accepted");
-  assert.equal(workers.get("parent", worker.id).reports[0].acceptance, "accepted");
-  assert.equal(workers.get("parent", worker.id).reports.length, 1);
-  await workers.close();
-});
-
 test("global guard blocks managed workers and reserved lanes across owners", async t => {
   const stateDir = mkdtempSync(join(tmpdir(), "workflow-guard-")); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
   const backend = new Backend(), store = new WorkflowStore(stateDir), workers = new Workers(backend, store, "/skills/codex-workflow");

@@ -9,11 +9,11 @@ export class WorkflowStore {
   constructor(readonly stateDir: string) {
     if (!isAbsolute(stateDir)) throw new Error("stateDir must be absolute");
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-    this.file = join(stateDir, "workflow.json");
+    this.file = join(stateDir, "orchestration.json");
     try { this.state = parse(readFileSync(this.file, "utf8")); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      this.state = { workers: [], runs: [], lanes: [] };
+      this.state = { runs: [], lanes: [] };
     }
   }
 
@@ -28,10 +28,6 @@ export class WorkflowStore {
 
 function parse(text: string): WorkflowState {
   const value = JSON.parse(text) as Partial<WorkflowState>;
-  if (!Array.isArray(value.workers) || !Array.isArray(value.runs) || !Array.isArray(value.lanes)) throw new Error("Invalid workflow state");
-  for (const worker of value.workers) {
-    if (!worker || typeof worker.id !== "string" || typeof worker.parentId !== "string" || !Array.isArray(worker.reports)) throw new Error("Invalid workflow worker state");
-    worker.output ??= {}; worker.lastEventSequence ??= 0;
-  }
-  return value as WorkflowState;
+  if (!Array.isArray(value.runs) || !Array.isArray(value.lanes)) throw new Error("Invalid workflow orchestration state");
+  return { runs: value.runs, lanes: value.lanes };
 }

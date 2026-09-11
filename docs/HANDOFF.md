@@ -24,14 +24,16 @@ disposer removes only its own slot/tab registrations.
 - Official DSH `0.1.5-rc.1` `dsh` must resolve on PATH.
 - `npm run dev -- --profile workflow-dev` starts the adjacent Codex watch-only
   entry first. Its exact ready line follows backend then Codex UI build.
-- Workflow is built next with its own installed esbuild, then its watcher and
-  exactly one PATH `dsh` Host start on port `0`.
+- Workflow is built next with its own installed esbuild, then its watcher
+  starts. Dev reuses a live Host for the same profile and effective backend
+  state, or starts exactly one PATH `dsh` Host on port `0` when none exists.
 - Optional repeatable `--patch <absolute-file>` pairs are validated and
   forwarded in order to that Host for temporary state overlays. They do not
   change profile bundles or HMR, and cleanup does not stop an older Host.
 - `--codex-kit` / `DSH_CODEX_KIT_CHECKOUT` select only the adjacent source
   checkout; they are not DSH executable overrides.
-- SIGINT/SIGTERM signals only the two watchers and Host created by this command.
+- SIGINT/SIGTERM signals the two watchers and only a Host created by this command;
+  a reused external Host remains running.
   Backend source changes retain the documented restart-required behavior.
 
 ## Package boundary

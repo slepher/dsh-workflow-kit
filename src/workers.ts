@@ -1,13 +1,117 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { BackendEvent, BackendMutation, CodexBackend, CreateSessionOptions, SequencedBackendEvent, StartTurnOptions } from "dsh-codex-kit-backend/browser-types";
+import type { BackendEvent, BackendMutation, BackendMutationAction, Caller, CodexBackend, CreateSessionOptions, Report as BackendReport, ReportAcceptance, SequencedBackendEvent, StartTurnOptions, WorkerProjection } from "dsh-codex-kit-backend/browser-types";
 import { conversation } from "./conversation.js";
 import { resolveRole } from "./roles.js";
 import { WorkflowStore } from "./store.js";
 import { parseUsage, type Acceptance, type Boundary, type Compaction, type ConversationItem, type DurableBackendEvent, type Report, type Skill, type Worker } from "./types.js";
 
 export type WorkflowBackend = CodexBackend;
+
+type ManagedRun = <T>(caller: Caller, workerId: string, action: BackendMutationAction, operation: () => T | Promise<T>) => Promise<T>;
+
+/** Stateless Workflow consumer; worker, turn and report facts remain in B. */
+export class WorkflowWorkers {
+  private readonly request = new AsyncLocalStorage<{ caller: Caller; assertIdentity: () => void }>();
+
+  constructor(
+    readonly backend: CodexBackend,
+    readonly store: WorkflowStore,
+    private readonly managedRun: ManagedRun,
+    readonly workflowSkillDir: string | undefined,
+    readonly implementationStandardDir?: string,
+  ) {}
+
+  run<T>(caller: Caller, assertIdentity: () => void, operation: () => T | Promise<T>): Promise<T> {
+    return Promise.resolve(this.request.run({ caller: structuredClone(caller), assertIdentity }, operation));
+  }
+
+  assertIdentity(): void { this.context().assertIdentity(); }
+
+  async list(parentId: string): Promise<readonly WorkerProjection[]> {
+    const caller = this.caller(parentId), workers = await this.backend.listWorkers(caller);
+    this.assertIdentity();
+    return workers.filter(worker => worker.managedBy === "workflow");
+  }
+
+  async get(parentId: string, id: string): Promise<WorkerProjection> {
+    const caller = this.caller(parentId), worker = await this.backend.getWorker(caller, id);
+    this.assertIdentity();
+    if (worker.managedBy !== "workflow") throw new Error("Managed workflow worker not found");
+    return worker;
+  }
+
+  async create(parentId: string, input: { id?: string; name: string; cwd: string; role?: string; model?: string; effort?: string; managed?: boolean; boundary?: Boundary }): Promise<WorkerProjection> {
+    if (!input.id || input.managed !== true) throw new Error("Managed workflow create requires a stable identity");
+    const caller = this.caller(parentId);
+    return this.mutate(caller, input.id, "create", () => this.backend.createWorker(caller, {
+      id: input.id, name: input.name, cwd: input.cwd, ...(input.role === undefined ? {} : { role: input.role }), boundary: input.boundary,
+    }));
+  }
+
+  async append(parentId: string, id: string, text: string, managed = false): Promise<WorkerProjection> {
+    this.managed(managed);
+    const worker = await this.get(parentId, id);
+    if (!text.trim() || worker.state !== "idle") throw new Error(`Worker is ${worker.state}; use steer for an active turn`);
+    const caller = this.caller(parentId);
+    await this.mutate(caller, id, "start", () => this.backend.startTurn(caller, id, text, { idempotencyKey: `${id}:${worker.reports.length + 1}` }));
+    return this.get(parentId, id);
+  }
+
+  async steer(parentId: string, id: string, turnId: string, text: string, managed = false): Promise<void> {
+    this.managed(managed); this.expectedTurn(await this.get(parentId, id), turnId);
+    const caller = this.caller(parentId);
+    await this.mutate(caller, id, "steer", () => this.backend.steerTurn(caller, id, turnId, text));
+  }
+
+  async interrupt(parentId: string, id: string, turnId: string, managed = false): Promise<void> {
+    this.managed(managed); this.expectedTurn(await this.get(parentId, id), turnId);
+    const caller = this.caller(parentId);
+    await this.mutate(caller, id, "interrupt", () => this.backend.interruptTurn(caller, id, turnId));
+  }
+
+  async accept(parentId: string, id: string, turnId: string, acceptance: ReportAcceptance, managed = false): Promise<BackendReport> {
+    this.managed(managed); const caller = this.caller(parentId);
+    return this.mutate(caller, id, "accept-report", () => this.backend.acceptReport(caller, id, turnId, acceptance));
+  }
+
+  async acknowledge(parentId: string, id: string, turnId: string): Promise<BackendReport> {
+    const caller = this.caller(parentId);
+    return this.mutate(caller, id, "ack-report", () => this.backend.acknowledgeReport(caller, id, turnId));
+  }
+
+  async closeWorker(parentId: string, id: string, confirmedStopped = false, managed = false): Promise<void> {
+    this.managed(managed); const caller = this.caller(parentId);
+    await this.mutate(caller, id, "close", () => this.backend.closeSession(caller, id, confirmedStopped));
+  }
+
+  async report(parentId: string, id: string, turnId?: string): Promise<BackendReport> {
+    const reports = (await this.get(parentId, id)).reports;
+    const report = turnId ? reports.find(item => item.turnId === turnId) : reports.at(-1);
+    if (!report) throw new Error("Report not found");
+    return report;
+  }
+
+  private context() {
+    const request = this.request.getStore();
+    if (!request) throw new Error("Managed workflow request context is unavailable");
+    return request;
+  }
+  private caller(parentId: string): Caller {
+    const request = this.context(); request.assertIdentity();
+    if (request.caller.source !== "agent" || !request.caller.parentAgent || request.caller.nativeSessionId !== parentId) throw new Error("Managed workflow parent identity mismatch");
+    return request.caller;
+  }
+  private mutate<T>(caller: Caller, workerId: string, action: BackendMutationAction, operation: () => T | Promise<T>): Promise<T> {
+    this.assertIdentity();
+    return this.managedRun(caller, workerId, action, async () => {
+      this.assertIdentity(); const result = await operation(); this.assertIdentity(); return result;
+    });
+  }
+  private managed(value: boolean): void { if (!value) throw new Error("Managed workflow worker requires codex_workflow"); }
+  private expectedTurn(worker: WorkerProjection, turnId: string): void { if (!turnId || worker.turnId !== turnId) throw new Error("Turn identity mismatch"); }
+}
 
 const terminal = new Set(["completed", "failed", "interrupted", "unknown"]);
 const owner = (parentId: string): string => `workflow:${parentId}`;
@@ -21,10 +125,10 @@ export class Workers extends EventEmitter {
   constructor(readonly backend: WorkflowBackend, readonly store: WorkflowStore, readonly workflowSkillDir: string, readonly implementationStandardDir?: string) {
     super();
     this.guards.set("global", this.backend.installGuard(request => this.guard(request)));
-    for (const worker of store.read().workers.filter(item => !item.closed)) this.watch(worker);
+    for (const worker of (store.read().workers ?? []).filter(item => !item.closed)) this.watch(worker);
   }
 
-  list(parentId: string): Worker[] { return this.store.read().workers.filter(worker => worker.parentId === parentId && !worker.closed && !worker.detached); }
+  list(parentId: string): Worker[] { return (this.store.read().workers ?? []).filter(worker => worker.parentId === parentId && !worker.closed && !worker.detached); }
   get(parentId: string, id: string): Worker {
     const worker = this.list(parentId).find(item => item.id === id);
     if (!worker) throw new Error("Worker not found");
@@ -37,14 +141,14 @@ export class Workers extends EventEmitter {
     if (!input.managed) this.assertLaneAvailable(input.cwd);
     const role = input.role ? resolveRole(input.role, this.workflowSkillDir, this.implementationStandardDir) : undefined;
     const id = input.id ?? randomUUID();
-    if (this.store.read().workers.some(worker => worker.id === id)) throw new Error("Worker identity already exists");
+    if ((this.store.read().workers ?? []).some(worker => worker.id === id)) throw new Error("Worker identity already exists");
     const worker: Worker = {
       id, parentId, name: input.name, cwd: input.cwd, role: role?.name,
       model: role?.model ?? input.model, effort: role?.effort ?? input.effort,
       state: "unknown", managed: input.managed === true,
       lastEventSequence: 0, reports: [], output: {}, owner: input.owner ?? "agent",
     };
-    this.store.read().workers.push(worker); this.store.save();
+    (this.store.read().workers ??= []).push(worker); this.store.save();
     const options: CreateSessionOptions = { model: worker.model, reasoningEffort: worker.effort, developerInstructions: role?.developerInstructions, boundary: input.boundary };
     try {
       const session = await this.allow(() => this.backend.createSession(owner(parentId), id, input.cwd, options));
@@ -55,12 +159,12 @@ export class Workers extends EventEmitter {
   }
 
   occupiedThreads(): Set<string> {
-    return new Set(this.store.read().workers.filter(worker => !worker.detached || !["idle", "saved"].includes(worker.state) || worker.savedState !== "idle").flatMap(worker => worker.threadId ? [worker.threadId] : []));
+    return new Set((this.store.read().workers ?? []).filter(worker => !worker.detached || !["idle", "saved"].includes(worker.state) || worker.savedState !== "idle").flatMap(worker => worker.threadId ? [worker.threadId] : []));
   }
 
   async adopt(parentId: string, threadId: string): Promise<Worker> {
     if (this.occupiedThreads().has(threadId)) throw new Error("This Codex session is already occupied");
-    const existing = this.store.read().workers.find(worker => worker.threadId === threadId && worker.detached && worker.state === "saved" && worker.savedState === "idle");
+    const existing = (this.store.read().workers ?? []).find(worker => worker.threadId === threadId && worker.detached && worker.state === "saved" && worker.savedState === "idle");
     if (existing) {
       existing.parentId = parentId; existing.owner = "user"; existing.detached = false; this.store.save(); this.watch(existing);
       return structuredClone(existing);
@@ -73,7 +177,7 @@ export class Workers extends EventEmitter {
       state: "saved", savedState: "idle", managed: false,
       lastEventSequence: 0, reports: [], output: {},
     };
-    this.store.read().workers.push(worker); this.store.save(); this.watch(worker);
+    (this.store.read().workers ??= []).push(worker); this.store.save(); this.watch(worker);
     return structuredClone(worker);
   }
 
@@ -179,7 +283,7 @@ export class Workers extends EventEmitter {
       this.consume(worker, record.event); worker.lastEventSequence = Math.max(worker.lastEventSequence, record.sequence); this.store.save();
     }
   }
-  async reconcileAll(): Promise<void> { for (const worker of this.store.read().workers.filter(item => !item.closed)) await this.reconcile(worker); }
+  async reconcileAll(): Promise<void> { for (const worker of (this.store.read().workers ?? []).filter(item => !item.closed)) await this.reconcile(worker); }
   async close(): Promise<void> { for (const off of this.subscriptions.values()) off(); this.subscriptions.clear(); for (const off of this.guards.values()) off(); this.guards.clear(); this.publicItems.clear(); }
 
   private report(parentId: string, id: string, turnId: string): Report {
@@ -251,7 +355,7 @@ export class Workers extends EventEmitter {
   }
   private guard(request: BackendMutation): void {
     if (this.permitted.getStore()) return;
-    const managed = request.sessionId && this.store.read().workers.some(worker => worker.id === request.sessionId && worker.managed && !worker.closed);
+    const managed = request.sessionId && (this.store.read().workers ?? []).some(worker => worker.id === request.sessionId && worker.managed && !worker.closed);
     if (managed) throw new Error(`Managed workflow worker: ${request.action} requires codex_workflow`);
     for (const path of [request.cwd, request.boundary?.cwd, ...(request.boundary?.writableRoots ?? [])]) if (path) this.assertLaneAvailable(path);
   }

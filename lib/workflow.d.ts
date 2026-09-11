@@ -1,4 +1,4 @@
-import type { Workers } from './workers.js';
+import type { WorkflowWorkers as Workers } from './workers.js';
 import type { Boundary } from './types.js';
 type Lane = {
     name: string;

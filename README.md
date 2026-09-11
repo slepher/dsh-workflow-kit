@@ -51,7 +51,8 @@ dsh plugin --profile workflow-dev add \
 ```
 
 After the one-time `npm run prepare:local`, one command builds and watches both
-checkouts and starts one host:
+checkouts. It reuses a live Host already running the same profile, or starts one
+Host when the profile has no matching live owner:
 
 ```bash
 npm run dev -- --profile workflow-dev
@@ -68,6 +69,7 @@ npm run dev -- --profile workflow-dev \
 Each `--patch` must name an existing file. The dev command resolves it to an
 absolute path and forwards the repeatable pairs to its single PATH `dsh` Host.
 This temporary overlay does not edit profile bundles or change either HMR
-watcher. The command does not discover or stop a Host started by another run.
+watcher. A reused Host remains externally owned and is never stopped by dev
+cleanup.
 
-The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. The script uses only `dsh` on PATH, waits for the Codex watcher's initial-build readiness line, then starts the workflow watcher and one host. Workflow source changes rerun the TypeScript plus closure build so client HMR always receives a registered `dsh-workflow-kit` artifact. Ctrl+C stops only its own two watchers and host.
+The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. The script uses only `dsh` on PATH and waits for the Codex watcher's initial-build readiness line before starting the workflow watcher. Workflow source changes rerun the TypeScript plus closure build so client HMR always receives a registered `dsh-workflow-kit` artifact. Ctrl+C stops its two watchers and only a Host it started itself.
