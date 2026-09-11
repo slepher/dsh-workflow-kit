@@ -117,8 +117,6 @@ export type WorkerAction =
   | { action: "approve"; workerId: string; approvalId: string; decision: "accept" | "decline" | "cancel" };
 
 export interface WorkflowState {
-  /** @deprecated Legacy adapter only; the B4 Host never constructs or persists this writer. */
-  workers?: Worker[];
   runs: unknown[];
   lanes: { path: string; owner?: string }[];
 }

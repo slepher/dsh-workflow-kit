@@ -1,4 +1,4 @@
-import type { WorkflowWorkers as Workers } from './workers.js';
+import type { WorkflowWorkers } from './workers.js';
 import type { Boundary } from './types.js';
 type Lane = {
     name: string;
@@ -19,12 +19,12 @@ export type WorkflowAction = {
 };
 /** Contract state is serialized alongside the existing worker service and directory lock. */
 export declare class Workflow {
-    readonly workers: Workers;
+    readonly workers: WorkflowWorkers;
     readonly skillRoot?: string | undefined;
     private runs;
     private directory;
     private queue;
-    constructor(workers: Workers, skillRoot?: string | undefined);
+    constructor(workers: WorkflowWorkers, skillRoot?: string | undefined);
     private save;
     private syncLanes;
     private python;
@@ -94,6 +94,7 @@ export declare class Workflow {
     }>;
     private action;
     private dispatch;
+    private recoverDispatch;
     private integrate;
 }
 export {};

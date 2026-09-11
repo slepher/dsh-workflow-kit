@@ -5,7 +5,7 @@ import { join, isAbsolute, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import type { WorkflowWorkers as Workers } from './workers.js'
+import type { WorkflowWorkers } from './workers.js'
 import { resolveRole, ROLES } from './roles.js'
 import type { Boundary, Effort, Report, ResolvedRole } from './types.js'
 
@@ -14,7 +14,7 @@ type Task = { network?: 'disabled'|'loopback'; lane?: boolean; cwd?: string; rea
 type Plan = { concurrency?: number; generation: string; revision: number; repository: string; target: string; base: string; delivery: string; text: string; policy: { initial: number; max: number; expand: boolean; bases: string[] }; roles: Record<string, {model: string; model_reasoning_effort: Effort}>; tasks: Record<string, Task> }
 type Review = { worker: string; turn?: string; candidate: string; target?: string; input: string; purpose?: 'disposition'; verdict?: string; report?: string }
 type Integration = { id: string; path: string; target: string; source: string; candidate?: string; conflict: boolean; requiredReview: boolean; review?: Review; resolution?: string; error?: string; delivered?: string }
-type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string }
+type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string }
 type Lane = { name: string; path: string; owner?: string }
 type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
 export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean }
@@ -24,7 +24,7 @@ export class Workflow {
   private runs: Run[]
   private directory: string
   private queue: Promise<unknown> = Promise.resolve()
-  constructor(readonly workers: Workers, readonly skillRoot?: string) {
+  constructor(readonly workers: WorkflowWorkers, readonly skillRoot?: string) {
     this.directory = workers.store.stateDir
     mkdirSync(this.directory, {recursive:true, mode:0o700})
     this.runs = workers.store.read().runs as Run[]
@@ -103,12 +103,12 @@ export class Workflow {
     if (!expected || role.model!==expected.model || role.effort!==expected.model_reasoning_effort) throw new Error(`Configured role/model/effort mismatch: ${name}`)
     return role
   }
-  private async start(run: Run, id: string, role: ResolvedRole, cwd: string, name: string, text: string, boundary?: Boundary) {
+  private async start(run: Run, id: string, role: ResolvedRole, cwd: string, name: string, text: string, boundary?: Boundary, idempotencyKey?: string) {
     await this.capacity(run)
     await this.workers.create(run.parent,{id,name,cwd,role:role.name,model:role.model,effort:role.effort,managed:true,boundary})
     const worker = await this.workers.get(run.parent,id)
     if (worker.model!==role.model || worker.effort!==role.effort) throw new Error('Runtime model/effort differs from required role; task was not started')
-    return this.workers.append(run.parent,id,text,true)
+    return this.workers.append(run.parent,id,text,true,idempotencyKey)
   }
   private async capacity(run: Run) {
     const limit=run.plan.concurrency ?? 4
@@ -276,8 +276,10 @@ export class Workflow {
       if (a.state!=='candidate') throw new Error('Record the candidate first')
       if (a.task.review==='independent' && (!a.review || await this.verdict(run,a.review)!=='passed')) throw new Error('Independent candidate review has not passed')
       const report=await this.report(run,a.worker,a.turn)
-      await this.workers.accept(parent,a.worker,report.turnId,'accepted',true)
-      a.state='accepted';this.save()
+      if (report.acceptance==='pending') await this.workers.accept(parent,a.worker,report.turnId,'accepted',true)
+      else if (report.acceptance!=='accepted') throw new Error('Task report has a conflicting acceptance')
+      const previous=a.state;a.state='accepted'
+      try {this.save()} catch(error) {a.state=previous;throw error}
     } else if (input.action==='integrate') { await this.integrate(run,a)
     } else if (input.action==='archive') {
       if (['accepted','delivered','released'].includes(a.state)) throw new Error('Accepted work needs planned disposition, not failed-attempt archival')
@@ -365,7 +367,11 @@ export class Workflow {
     const existing=run.attempts.filter(a=>a.task.id===task.id)
     const number=input.attempt??existing.at(-1)?.number??1
     if (!Number.isSafeInteger(number)||number<1) throw new Error('Invalid attempt')
-    if (existing.some(a=>a.number===number)) return
+    const duplicate=existing.find(a=>a.number===number)
+    if (duplicate) {
+      if (duplicate.state==='unknown'||duplicate.state==='reserved') await this.recoverDispatch(run,duplicate)
+      return
+    }
     if (number!==(existing.at(-1)?.number??0)+1 || existing.some(a=>a.state!=='released')) throw new Error('Retain/deliver and release the prior attempt before a new one')
     const deps=task.depends.map(id=>[...run.attempts].reverse().find(a=>a.task.id===id&&!a.discarded&&a.task.revision===run.plan.tasks[id]?.revision&&['accepted','delivered','released'].includes(a.state)))
     if (deps.some(d=>!d?.candidate)) throw new Error('Dependencies require accepted candidates')
@@ -400,7 +406,10 @@ export class Workflow {
     const reportPaths=(task.reports??[]).map(path=>this.scoped(results,path))
     const allocation={cwd,results,artifacts,network:task.network??'disabled',writableRoots:[...new Set([...writes,...(reportPaths.length?[results]:[]),artifacts])],ports:await this.ports(task.ports??[])}
     for (const path of reportPaths) mkdirSync(dirname(path),{recursive:true,mode:0o700})
-    const a:Attempt={task:structuredClone(task),number,worker:randomUUID(),lane:lane?.name,allocation,base,contract:join(directory,'contract.md'),directory,state:'reserved'}
+    const worker=randomUUID(), initialStartKey=`workflow:${run.id}:${task.id}:A${number}:initial`
+    const contract=join(directory,'contract.md')
+    const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. Task and command cwd ${cwd}. Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'} Return the complete result as Markdown in your final response using execution-result fields Task ${task.id}, Contract revision ${task.revision}, Attempt ${number}, Input snapshot ${base}, Candidate snapshot the actual commit and Outcome (complete, blocked, needs-decision or needs-verification). Include verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
+    const a:Attempt={task:structuredClone(task),number,worker,initialPrompt,initialStartKey,lane:lane?.name,allocation,base,contract,directory,state:'reserved'}
     writeFileSync(a.contract,task.text,{mode:0o600});writeFileSync(join(directory,'plan.md'),run.plan.text,{mode:0o600})
     if (lane) lane.owner=`${task.id}-A${number}`;run.attempts.push(a);this.save()
     try {
@@ -419,10 +428,33 @@ export class Workflow {
         try { await this.commit(run.plan.repository,input) }
         catch { if (!existsSync(this.scoped(run.plan.repository,input))) throw new Error(`Input unavailable: ${input}`) }
       }
-      const w=await this.start(run,a.worker,role,cwd,`${task.id} A${number}`,
-        `Execute the frozen contract ${a.contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. Task and command cwd ${cwd}. Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'} Return the complete result as Markdown in your final response using execution-result fields Task ${task.id}, Contract revision ${task.revision}, Attempt ${number}, Input snapshot ${base}, Candidate snapshot the actual commit and Outcome (complete, blocked, needs-decision or needs-verification). Include verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`,allocation)
+      const w=await this.start(run,a.worker,role,cwd,`${task.id} A${number}`,initialPrompt,allocation,initialStartKey)
       a.turn=w.turnId??undefined;a.state='running';this.save()
     } catch(e) {a.state='unknown';a.error=String(e);this.save();throw e}
+  }
+
+  private async recoverDispatch(run:Run,a:Attempt) {
+    let worker
+    try {worker=await this.workers.get(run.parent,a.worker)}
+    catch(error) {throw new Error(`Dispatch recovery could not read worker ${a.worker}; preserved unknown attempt: ${String(error)}`)}
+    const observed=new Set([worker.turnId,...worker.reports.map(report=>report.turnId)].filter((value): value is string=>typeof value==='string'&&value.length>0))
+    if (a.turn!==undefined && (observed.size!==1||!observed.has(a.turn))) throw new Error('Dispatch recovery turn identity mismatch; preserved unknown attempt')
+    if (a.turn===undefined&&observed.size>1) throw new Error('Dispatch recovery found ambiguous turns; preserved unknown attempt')
+    if (observed.size===1) {
+      const previous={turn:a.turn,state:a.state,error:a.error}
+      a.turn=[...observed][0];a.state=['running','waiting-approval','interrupt-requested'].includes(worker.state)?'running':'unknown';delete a.error
+      try {this.save()} catch(error) {a.turn=previous.turn;a.state=previous.state;a.error=previous.error;throw error}
+      return
+    }
+    if (worker.state==='idle'&&worker.reports.length===0&&a.initialPrompt&&a.initialStartKey) {
+      const result=await this.workers.append(run.parent,a.worker,a.initialPrompt,true,a.initialStartKey)
+      if (!result.turnId) throw new Error('Dispatch recovery started no identifiable turn; preserved unknown attempt')
+      const previous={turn:a.turn,state:a.state,error:a.error}
+      a.turn=result.turnId;a.state='running';delete a.error
+      try {this.save()} catch(error) {a.turn=previous.turn;a.state=previous.state;a.error=previous.error;throw error}
+      return
+    }
+    throw new Error(`Dispatch recovery found worker ${worker.state} without an unambiguous turn; preserved unknown attempt`)
   }
 
   private async integrate(run:Run,a:Attempt) {

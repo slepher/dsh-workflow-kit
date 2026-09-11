@@ -1,8 +1,6 @@
-import { EventEmitter } from "node:events";
 import type { BackendMutationAction, Caller, CodexBackend, Report as BackendReport, ReportAcceptance, WorkerProjection } from "dsh-codex-kit-backend/browser-types";
 import { WorkflowStore } from "./store.js";
-import { type Acceptance, type Boundary, type Report, type Skill, type Worker } from "./types.js";
-export type WorkflowBackend = CodexBackend;
+import type { Boundary } from "./types.js";
 type ManagedRun = <T>(caller: Caller, workerId: string, action: BackendMutationAction, operation: () => T | Promise<T>) => Promise<T>;
 /** Stateless Workflow consumer; worker, turn and report facts remain in B. */
 export declare class WorkflowWorkers {
@@ -27,7 +25,7 @@ export declare class WorkflowWorkers {
         managed?: boolean;
         boundary?: Boundary;
     }): Promise<WorkerProjection>;
-    append(parentId: string, id: string, text: string, managed?: boolean): Promise<WorkerProjection>;
+    append(parentId: string, id: string, text: string, managed?: boolean, idempotencyKey?: string): Promise<WorkerProjection>;
     steer(parentId: string, id: string, turnId: string, text: string, managed?: boolean): Promise<void>;
     interrupt(parentId: string, id: string, turnId: string, managed?: boolean): Promise<void>;
     accept(parentId: string, id: string, turnId: string, acceptance: ReportAcceptance, managed?: boolean): Promise<BackendReport>;
@@ -39,59 +37,6 @@ export declare class WorkflowWorkers {
     private mutate;
     private managed;
     private expectedTurn;
-}
-export declare class Workers extends EventEmitter {
-    readonly backend: WorkflowBackend;
-    readonly store: WorkflowStore;
-    readonly workflowSkillDir: string;
-    readonly implementationStandardDir?: string | undefined;
-    private readonly permitted;
-    private readonly subscriptions;
-    private readonly guards;
-    private readonly publicItems;
-    constructor(backend: WorkflowBackend, store: WorkflowStore, workflowSkillDir: string, implementationStandardDir?: string | undefined);
-    list(parentId: string): Worker[];
-    get(parentId: string, id: string): Worker;
-    pending(parentId: string): Report[];
-    create(parentId: string, input: {
-        id?: string;
-        name: string;
-        cwd: string;
-        role?: string;
-        model?: string;
-        effort?: string;
-        managed?: boolean;
-        boundary?: Boundary;
-        owner?: "agent" | "user";
-    }): Promise<Worker>;
-    occupiedThreads(): Set<string>;
-    adopt(parentId: string, threadId: string): Promise<Worker>;
-    link(parentId: string, id: string): Worker;
-    detach(parentId: string, id: string): Promise<void>;
-    append(parentId: string, id: string, text: string, managed?: boolean, skills?: readonly Skill[]): Promise<Worker>;
-    steer(parentId: string, id: string, turnId: string, text: string, managed?: boolean, skills?: readonly Skill[]): Promise<void>;
-    interrupt(parentId: string, id: string, turnId: string, managed?: boolean): Promise<void>;
-    resume(parentId: string, id: string, confirmedStopped?: boolean, managed?: boolean): Promise<Worker>;
-    configure(parentId: string, id: string, model?: string, effort?: string, managed?: boolean): Promise<Worker>;
-    compact(parentId: string, id: string): Promise<Worker>;
-    review(parentId: string, id: string): Promise<Worker>;
-    approve(parentId: string, id: string, approvalId: string, decision: "accept" | "decline" | "cancel"): Promise<void>;
-    acknowledge(parentId: string, id: string, turnId: string): Report;
-    accept(parentId: string, id: string, turnId: string, acceptance: Acceptance, managed?: boolean): Report;
-    closeWorker(parentId: string, id: string, confirmedStopped?: boolean, managed?: boolean): Promise<void>;
-    reconcile(worker: Worker): Promise<void>;
-    reconcileAll(): Promise<void>;
-    close(): Promise<void>;
-    private report;
-    private managed;
-    private expectedTurn;
-    private watch;
-    private consume;
-    private conversationEvent;
-    private complete;
-    private guard;
-    private assertLaneAvailable;
-    private allow;
 }
 export {};
 //# sourceMappingURL=workers.d.ts.map

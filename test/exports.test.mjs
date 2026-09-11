@@ -6,7 +6,7 @@ import { WORKFLOW_OWNED_STATE, WORKFLOW_PLUGIN_ID } from "../lib/index.js";
 
 test("exports the workflow boundary", () => {
   assert.equal(WORKFLOW_PLUGIN_ID, "dsh-workflow-kit");
-  assert.equal(WORKFLOW_OWNED_STATE.includes("acceptance"), true);
+  assert.deepEqual(WORKFLOW_OWNED_STATE, ["tasks", "attempts", "lanes", "reviews", "integration", "delivery", "release"]);
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
   assert.deepEqual(Object.keys(manifest.exports).sort(), [".", "./client"]);
