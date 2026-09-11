@@ -50,6 +50,7 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   t.after(() => backend.close());
   await action({ action: "adopt", generation }); await action({ action: "dispatch", task: "T001" });
   let summary = await action({ action: "status" }), attempt = summary.tasks[0];
+  assert.match(hub.servers[0].calls.find(call => call.method === "turn/start").params.input[0].text, /- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: [0-9a-f]+\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>/);
   await assert.rejects(backend.configureSession(caller, attempt.workerId, {}), /requires codex_workflow/);
   await finish(attempt.workerId, attempt.turnId, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`);
   await action({ action: "record-result", task: "T001" });
