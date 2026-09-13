@@ -2,22 +2,22 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url)), args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
-const codex = resolve(option("--codex-kit") ?? process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
-if (!existsSync(join(codex, "scripts/dev-host.mjs")) || !existsSync(join(codex, "scripts/watch.mjs"))) throw new Error(`Codex dev entries not found: ${codex}`);
-const host = await import(pathToFileURL(join(codex, "scripts/dev-host.mjs")));
+const codex = resolve(option("--app-provider") ?? process.env.DSH_CODEX_APP_PROVIDER_CHECKOUT ?? "../dsh-codex-app-provider");
+if (!existsSync(join(codex, "src/provider.ts")) || !existsSync(join(codex, "scripts/watch.mjs"))) throw new Error(`Codex dev entries not found: ${codex}`);
+const host = await import("./dev-host.mjs");
 const { profile, patches, dshHome } = host.parseDevOptions(args);
 const profileManifest = join(dshHome, "profiles", profile, "package.json");
 if (!existsSync(profileManifest)) throw new Error(`DSH profile ${profile} is not prepared. Follow README.md once before npm run dev.`);
-const expectedBundles = ["dsh-codex-kit-backend", "dsh-codex-kit", "dsh-workflow-kit"];
+const expectedBundles = ["dsh-codex-app-provider", "dsh-workflow-kit"];
 const bundles = JSON.parse(readFileSync(profileManifest, "utf8"))?.dsh?.profile?.bundles;
-if (bundles?.filter(bundle => expectedBundles.includes(bundle)).join("\0") !== expectedBundles.join("\0")) throw new Error(`DSH profile ${profile} must load backend, UI, then workflow exactly once.`);
+if (bundles?.filter(bundle => expectedBundles.includes(bundle)).join("\0") !== expectedBundles.join("\0")) throw new Error(`DSH profile ${profile} must load app provider, then workflow exactly once.`);
 
-const expectedRoots = [join(codex, "packages/dsh-codex-kit-backend/lib/host"), join(codex, "packages/dsh-codex-kit/lib"), join(root, "lib")];
-const effective = host.resolveDevHost({ profile, patches, dshHome, expectedRoots });
+const expectedRoots = [join(root, "lib")];
+const effective = host.resolveDevHost({ profile, patches, dshHome, expectedRoots, providerCheckout: codex });
 let owner = host.inspectOwner(effective.stateDir, profile);
 const temp = mkdtempSync(join(tmpdir(), "dsh-workflow-kit-dev-")), overlay = join(temp, "hmr.patch.yml");
 const base = dirname(codex);
@@ -59,17 +59,17 @@ try {
   };
   if (owner !== undefined) {
     assertHmr(effective);
-    host.assertBaseline(codex, ["packages/dsh-codex-kit-backend/lib/index.js", "packages/dsh-codex-kit-backend/lib/host/index.js", "packages/dsh-codex-kit/lib/index.js", "packages/dsh-codex-kit/lib/client.js"]);
+    host.assertBaseline(codex, ["lib/index.js", "lib/backend.js", "lib/provider.js", "lib/client.js"]);
     host.assertBaseline(root, ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js"]);
   } else {
-    const launched = host.resolveDevHost({ profile, patches: [...patches, overlay], dshHome, expectedRoots });
+    const launched = host.resolveDevHost({ profile, patches: [...patches, overlay], dshHome, expectedRoots, providerCheckout: codex });
     assertHmr(launched);
     if (launched.stateDir !== effective.stateDir) throw new Error("HMR overlay changed backend stateDir");
     await build(codex); barrier(); await build(root); barrier();
   }
   const codexWatch = start(process.execPath, ["scripts/watch.mjs", "--no-initial-build"], { cwd: codex });
-  await ready(codexWatch, "dsh-codex-kit watch ready"); barrier();
-  const workflowWatch = start(process.execPath, ["scripts/watch.mjs", "--no-initial-build", "--codex-kit", codex], { cwd: root });
+  await ready(codexWatch, "dsh-codex-app-provider watch ready"); barrier();
+  const workflowWatch = start(process.execPath, ["scripts/watch.mjs", "--no-initial-build", "--app-provider", codex], { cwd: root });
   await ready(workflowWatch, "dsh-workflow-kit watch ready"); barrier();
   if (owner === undefined) {
     barrier();

@@ -24,4 +24,6 @@ export interface ResolvedRole extends Role { developerInstructions: string }
 export interface WorkflowState {
   runs: unknown[];
   lanes: { path: string; owner?: string }[];
+  selectedProfiles?: Record<string, string | null>;
+  nativeChildren?: Record<string, import("./workers.js").NativeChildRecord>;
 }

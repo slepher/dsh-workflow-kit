@@ -1,77 +1,60 @@
 # dsh-workflow-kit
 
-`dsh-workflow-kit` adds managed workflow execution, roles, prompts, skills, and CLI support to DSH. It consumes worker and report facts from the public `dsh-codex-kit-backend` API; the Codex worker UI belongs to `dsh-codex-kit`.
+Workflow owns role/profile files, native Session profile selections, task contracts, lanes, acceptance, integration and release. Codex execution runs through DSH native children and the single `dsh-codex-app-provider` Host plugin. The same package provides a `./client` profile selector in the native Conversation header.
 
 ## Runtime configuration
 
-Load `dsh-codex-kit-backend` first so the host provides `ctx.codexKit.backend`, then load this package with:
+Load `dsh-codex-app-provider` before this package. Configure one workflow entry:
 
-- `stateDir`: an absolute directory dedicated to new workflow state.
-- `workflowSkillDir`: the absolute installed `codex-workflow` skill directory. Role protocol files are resolved below `references/roles/`.
-- `implementationStandardDir`: optional absolute `audit-implementation-simplicity` skill directory. By default it is resolved beside `workflowSkillDir`.
+```yaml
+- id: dsh-workflow-kit
+  config:
+    stateDir: /absolute/isolated/state/workflow
+    workflowSkillDir: /absolute/skills/codex-workflow
+    implementationStandardDir: /absolute/skills/audit-implementation-simplicity
+    subdir: workflow-kit
+    defaultProfile: workflow-default
+```
 
-Do not point `stateDir` at a previous `dsh-subagents-codex` deployment. Backend Session/thread state remains backend-owned; this package persists worker projections, terminal reports, acknowledgements, acceptance, plans, attempts, lanes, reviews, integration, delivery, and release.
+`stateDir` contains workflow records, acceptance and native child creation snapshots. Native Session/thread execution state and terminal report contents remain execution-owned. Existing legacy data is retained. `workflowSkillDir` identifies the installed task-contract tooling and role protocols. The optional implementation standard directory defaults to the sibling `audit-implementation-simplicity` skill.
 
-The host registers two tools:
+`subdir` is relative to DSH home (`DSH_HOME`, or `~/.dsh`), independent of cwd. Absolute paths, dot segments and symlink escapes are rejected. `roles/*.md` supplies complete developer instructions; `profiles/*.json` maps role IDs to explicit model and reasoningEffort values. The Host validates ordinary files, isolates invalid profiles and never falls back to another profile. Configuration is refreshed explicitly.
 
-- `codex_workers`: ordinary create, roles, list, get, reports, append, steer, interrupt, resume, accept, ack, and close.
-- `codex_workflow`: adopt, status, dispatch, record-result, accept, integrate, resolve, resolved, continue, refresh-integration, archive, and release.
+`defaultProfile` initializes each native parent Session's selection once. An unset default leaves the selection empty. Switching profiles affects future children; existing children keep their recorded model, effort, instructions and execution limits through continuation and cold Agent resume. A deleted selected profile stays selected and blocks new creation until a valid selection is made.
 
-Managed worker mutation and occupied lane creation are rejected through the backend's global mutation guard. Reports are persisted before notification, terminal events are reconciled by durable sequence after restart, and duplicate terminal events retain one report per worker/turn. Notification, acknowledgement, acceptance, delivery, and release are distinct states.
+The Host registers `codex_workflow` for adopted task contracts and uses native child creation, prompt queue/steer and interruption. It reads execution facts through `codexExecution.read`; a native completed turn remains pending workflow acceptance. Unknown execution never authorizes takeover or redispatch. Workflow unload removes its tool and profile RPC; it does not close Codex execution or delete Session history.
 
-## Build and test
+## Install role configuration
 
-Requires Node.js 22.19 or newer, DSH `0.1.5-rc.1`, `dsh-codex-kit-backend` `0.1.0`, Python 3 for the bundled standard-library contract validator, and Git for managed lane/integration operations.
+Installation is explicit and uses the target deployment's effective DSH bundle, profile, home and ordered patch layers. The command does not start a Host or create a missing profile:
+
+```bash
+npm run install:configuration -- --profile workflow-dev --dsh-home /absolute/dsh-home
+# Add the same repeatable --patch paths used by the deployment when applicable.
+```
+
+The installer and Host share the same directory resolver. Installation requires literal path fields and enabled state in the effective configuration; it does not evaluate `!!js`. DSH overlays replace the complete `config` value, so include the required fields in the final override. The installer checks installed skill references, writes seven role files and `workflow-default.json`, and reports different existing files without overwriting them. Custom files remain untouched. After installation, use the profile selector's Refresh action in an already running Host.
+
+## Build and validation
+
+Requires Node >=22.19, Python 3, Git, `dsh-codex-app-provider` 0.1.0 and a coordinated DSH package set containing the native execution interfaces. The checked-in dependency locks identify local tarballs built from DSH 0.1.5-rc.1 source with changes; registry rc.1 alone does not implement those interfaces.
+
+Build and pack the provider and coordinated DSH dependencies first, then:
 
 ```bash
 npm run prepare:local
 npm run build
-npm test
+node --test --test-isolation=none test/install-configuration.test.mjs test/prepare-local.test.mjs test/profile-rpc.test.mjs test/host.test.mjs test/native-workers.test.mjs test/backend-consumer.test.mjs test/workflow.test.mjs test/configuration.test.mjs test/store.test.mjs
 ```
 
-`prepare:local` is the pre-publication setup for two adjacent fresh checkouts
-named `dsh-codex-kit` and `dsh-workflow-kit`. It runs the Codex workspace's
-locked install, installs the matching adjacent backend into this checkout with
-npm's `--no-save` mode, then builds backend → Codex. It does not rewrite either
-repository's manifest or lock. Once `dsh-codex-kit-backend@0.1.0` is published,
-a standalone workflow consumer can use ordinary `npm ci` instead.
+`prepare:local` checks local tarballs before running locked `npm ci`; it does not build or modify another checkout. The compiled Host, same-package client, configuration installer and `scripts/workflowctl.py` ship together. Native DSH Conversation supplies the child transcript and execution controls; the workflow client supplies only profile controls.
 
-The package ships its compiled Host entry, `cordis.patch.yml`, and `scripts/workflowctl.py`. Backend code changes require an explicit restart after running tasks are safely stopped; unloading Workflow does not close backend processes.
+## Remaining validation and development work
 
-## Development
+The adjacent provider's `EXECUTION.md` records isolated profile A/B creation and cold Agent resume. `evidence/workflow-contract-live-result.json` now records real T001/T002 dispatch, result recording, acceptance, integration and release, including an independent reviewer for T002. `evidence/browser-host-recovery-result.json` records provider Host cold recovery and native child/draft isolation. Provider-only and provider+workflow isolated package checks passed. Workflow profile UI, approval/interruption browser behavior and failure scenarios still require their own evidence; these bounded passes do not certify every workflow path.
 
-Prepare the dedicated profile once with the official `0.1.5-rc.1` `dsh` on PATH. If the profile does not exist, initialize the Web template, stop only that newly started host with Ctrl+C, then link the three checkouts in backend → UI → workflow order:
+`npm run pack:check` stages fresh source builds and verifies provider-only and provider+workflow tarball installs with the coordinated DSH overrides. It retains the temporary directory and prints its path. The runtime check mounts real Cordis services without calling a model; browser and real workflow delivery are separate checks.
 
-```bash
-dsh --profile workflow-dev --from-default-profile web --no-open --port 0
-dsh plugin --profile workflow-dev add \
-  link:/absolute/path/to/dsh-codex-kit/packages/dsh-codex-kit-backend \
-  link:/absolute/path/to/dsh-codex-kit/packages/dsh-codex-kit \
-  link:/absolute/path/to/dsh-workflow-kit
-```
+`npm run dev -- --profile <prepared-profile> --app-provider /absolute/provider-checkout` uses the prepared profile's native bundle layers and ordered `--patch` overlays. The profile resolves `dsh-codex-app-provider` to that checkout and loads it before `dsh-workflow-kit`, with an absolute provider stateDir and enabled HMR roots covering only workflow lib. `DSH_CODEX_APP_PROVIDER_CHECKOUT` supplies the checkout when the flag is omitted. Linux owner inspection reuses only the same official Host/profile and leaves a reused Host running on exit.
 
-After the one-time `npm run prepare:local`, one command owns the joint development
-entry. It validates the effective profile and backend owner before writing any
-artifact. A valid live Host uses both watchers with `--no-initial-build`; with no
-owner it builds Codex then Workflow, waits for both watchers, and starts one
-official Host on port `0`:
-
-```bash
-npm run dev -- --profile workflow-dev
-```
-
-If the profile's configured `stateDir` conflicts with another stage-5 run,
-append one or more official rc.1 patch overlays in order:
-
-```bash
-npm run dev -- --profile workflow-dev \
-  --patch /absolute/path/to/state-overlay.yml
-```
-
-Each `--patch` must name an existing file. The dev command resolves it to an
-absolute path and forwards the repeatable pairs to its single PATH `dsh` Host.
-The ordered overlays participate in the same owner/stateDir check. A reused Host
-must already expose the backend Host, Codex, and Workflow HMR roots and remains
-externally owned; dev cleanup never stops it.
-
-The adjacent `../dsh-codex-kit` checkout is the default. Override it with `--codex-kit /absolute/path` or `DSH_CODEX_KIT_CHECKOUT`. Workflow changes build in staging and atomically replace only W `lib`; build failure, shutdown, or a backend core change leaves live output untouched. Ctrl+C waits for its two owned watchers and stops only a Host it started itself.
+Both watchers publish complete staged builds atomically. Provider execution-source changes pause publication until restart; the unified provider lib is excluded from Host HMR. Client-only provider changes can rebuild the bundle for page refresh. Workflow source changes retain native HMR while its watcher also pauses after provider execution changes. No production profile is changed by these checks.

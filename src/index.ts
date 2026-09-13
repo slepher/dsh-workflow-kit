@@ -16,3 +16,5 @@ export { WorkflowWorkers } from "./workers.js";
 export { Workflow, type WorkflowAction } from "./workflow.js";
 export { apply, inject, name, type Config } from "./host.js";
 export type * from "./types.js";
+
+export { WorkflowConfiguration, configurationDirectory, installConfiguration } from "./configuration.js";

@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { installForProfile } from "../scripts/install-configuration.mjs";
+import { WorkflowConfiguration, ROLES } from "../lib/index.js";
+
+test("installer reads native profile, home and ordered overlay layers without booting", t => {
+  const home = mkdtempSync(join(tmpdir(), "workflow-install-profile-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const profile = join(home, "profiles/test"), skills = join(home, "skills/codex-workflow"), standard = join(home, "skills/audit-implementation-simplicity");
+  mkdirSync(profile, { recursive: true }); mkdirSync(join(skills, "references/roles"), { recursive: true }); mkdirSync(standard);
+  for (const role of ROLES) writeFileSync(join(skills, "references/roles", role.protocol), role.name);
+  writeFileSync(join(standard, "SKILL.md"), "standard");
+  writeFileSync(join(profile, "package.json"), JSON.stringify({ dsh: { profile: { bundles: [] } } }));
+  writeFileSync(join(profile, "cordis.patch.yml"), `- insert:\n    - id: dsh-workflow-kit\n      name: dsh-workflow-kit\n      config:\n        workflowSkillDir: ${JSON.stringify(skills)}\n        subdir: profile-config\n`);
+  writeFileSync(join(home, "cordis.patch.yml"), `- id: dsh-workflow-kit\n  config:\n    workflowSkillDir: ${JSON.stringify(skills)}\n    subdir: home-config\n`);
+  const first = join(home, "one.yml"), second = join(home, "two.yml");
+  writeFileSync(first, `- id: dsh-workflow-kit\n  config:\n    workflowSkillDir: ${JSON.stringify(skills)}\n    subdir: first-config\n`);
+  writeFileSync(second, `- id: dsh-workflow-kit\n  config:\n    workflowSkillDir: ${JSON.stringify(skills)}\n    subdir: final-config\n`);
+  const result = installForProfile({ profile: "test", home, patches: [first, second] });
+  assert.equal(result.directory, join(home, "final-config"));
+  assert.equal(existsSync(join(home, "profile-config")), false); assert.equal(existsSync(join(home, "home-config")), false);
+  const catalog = new WorkflowConfiguration("final-config", home);
+  assert.equal(catalog.view().profiles[0].id, "workflow-default");
+  assert.ok(catalog.capture("workflow-default", "reviewer").developerInstructions.includes(skills));
+  const file = join(home, "final-config/roles/reviewer.md"); writeFileSync(file, "user edit");
+  assert.throws(() => installForProfile({ profile: "test", home, patches: [first, second] }), /Preserved/);
+  assert.equal(readFileSync(file, "utf8"), "user edit");
+  assert.throws(() => installForProfile({ profile: "missing", home })); assert.equal(existsSync(join(home, "profiles/missing")), false);
+  writeFileSync(second, "- id: dsh-workflow-kit\n  disabled: true\n");
+  assert.throws(() => installForProfile({ profile: "test", home, patches: [second] }), /enable exactly one/);
+});

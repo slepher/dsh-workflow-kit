@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url)), args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
-const codex = resolve(option("--codex-kit") ?? process.env.DSH_CODEX_KIT_CHECKOUT ?? "../dsh-codex-kit");
-const backend = join(codex, "packages/dsh-codex-kit-backend"), stageRoot = join(root, ".watch");
-const required = ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js"];
+const codex = resolve(option("--app-provider") ?? process.env.DSH_CODEX_APP_PROVIDER_CHECKOUT ?? "../dsh-codex-app-provider");
+const stageRoot = join(root, ".watch");
+const required = ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js", "lib/client.js", "lib/client/index.d.ts"];
 let current, pending = false, stopped = false, coreChanged = false;
 
 const run = (command, argv, options = {}) => new Promise(resolveExit => {
@@ -35,8 +35,8 @@ async function rebuild() {
   if (coreChanged) { console.log("dsh-workflow-kit publication skipped: backend restart required"); return; }
   const stage = join(stageRoot, "workflow-build"); rmSync(stage, { recursive: true, force: true });
   mkdirSync(join(stage, "scripts"), { recursive: true });
-  for (const path of ["src", "package.json", "tsconfig.json"]) cpSync(join(root, path), join(stage, path), { recursive: true });
-  cpSync(join(root, "scripts/build-skills.mjs"), join(stage, "scripts/build-skills.mjs"));
+  for (const path of ["src", "package.json", "tsconfig.json", "tsconfig.client.json"]) cpSync(join(root, path), join(stage, path), { recursive: true });
+  for (const file of ["build-skills.mjs", "build-client.mjs"]) cpSync(join(root, "scripts", file), join(stage, "scripts", file));
   symlinkSync(join(root, "node_modules"), join(stage, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const code = await run("npm", ["run", "build"], { cwd: stage });
   if (stopped) return;
@@ -65,9 +65,9 @@ try {
   }
   if (!stopped) {
     watchers.push(watch(join(root, "src"), { recursive: true }, () => { pending = true; void rebuild(); }));
-    watchers.push(watch(join(backend, "src"), (_event, filename) => {
-      if (String(filename ?? "").split(/[\\/]/)[0] === "host") return;
-      if (!coreChanged) console.log("dsh-workflow-kit backend core changed; restart required; publication paused for this watch run");
+    watchers.push(watch(join(codex, "src"), { recursive: true }, (_event, filename) => {
+      if (String(filename ?? "").split(/[\\/]/)[0] === "client") return;
+      if (!coreChanged) console.log("dsh-workflow-kit provider execution source changed; restart required; publication paused for this watch run");
       coreChanged = true;
     }));
     console.log("dsh-workflow-kit watch ready");

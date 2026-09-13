@@ -10,7 +10,7 @@ import sys
 import os
 from pathlib import Path, PurePosixPath
 
-# DSH owns execution profiles; the host passes its bundled catalog.
+# Workflow supplies the selected profile for role validation; model choices are not frozen into the plan.
 def load_role_profiles(_root):
     return json.loads(os.environ["DSH_ROLE_PROFILES"]), None
 
@@ -287,7 +287,7 @@ def export_dsh(generation: Path) -> dict:
     return {"generation": str(generation), "revision": int(plan["Revision"]), "repository": plan["Repository"],
             "target": plan["Target"], "base": plan["Base"], "delivery": plan["Delivery"], "text": text,
             "policy": {"initial": initial, "max": maximum, "expand": lane["Expand"] == "yes", "bases": bases},
-            "concurrency": positive(plan.get("Max workers", "4"), generation), "roles": roles, "tasks": tasks}
+            "concurrency": positive(plan.get("Max workers", "4"), generation), "tasks": tasks}
 
 
 def main(argv: list[str] | None = None) -> int:

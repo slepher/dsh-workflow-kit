@@ -7,14 +7,13 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "skipLibCheck": true,
     "rootDir": "src",
     "outDir": "lib",
-    "skipLibCheck": true
+    "jsx": "react-jsx"
   },
   "include": [
-    "src/**/*.ts"
-  ],
-  "exclude": [
-    "src/client"
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx"
   ]
 }

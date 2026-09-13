@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import type { WorkflowWorkers } from './workers.js'
-import type { Report } from 'dsh-codex-kit-backend/browser-types'
-import { resolveRole, ROLES } from './roles.js'
-import type { Boundary, Effort, ResolvedRole } from './types.js'
+import type { Report } from './workers.js'
+import { ROLES } from './roles.js'
+import type { Boundary } from './types.js'
 
 const exec = promisify(execFile)
 type Task = { network?: 'disabled'|'loopback'; lane?: boolean; cwd?: string; reads?: string[]; writes?: string[]; reports?: string[]; ports?: string[]; id: string; revision: number; role: string; depends: string[]; owned: string[]; resources: string[]; inputs: string[]; review: string; text: string }
-type Plan = { concurrency?: number; generation: string; revision: number; repository: string; target: string; base: string; delivery: string; text: string; policy: { initial: number; max: number; expand: boolean; bases: string[] }; roles: Record<string, {model: string; model_reasoning_effort: Effort}>; tasks: Record<string, Task> }
+type Plan = { concurrency?: number; generation: string; revision: number; repository: string; target: string; base: string; delivery: string; text: string; policy: { initial: number; max: number; expand: boolean; bases: string[] }; tasks: Record<string, Task> }
 type Review = { worker: string; turn?: string; candidate: string; target?: string; input: string; purpose?: 'disposition'; verdict?: string; report?: string }
 type Integration = { id: string; path: string; target: string; source: string; candidate?: string; conflict: boolean; requiredReview: boolean; review?: Review; resolution?: string; error?: string; delivered?: string }
 type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string }
@@ -63,7 +63,7 @@ export class Workflow {
   private syncLanes() { this.workers.store.read().lanes=[...new Map(this.runs.flatMap(run=>run.lanes).map(lane=>[lane.path,lane])).values()] }
   private async python(...args: string[]) {
     this.workers.assertIdentity()
-    const result=await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(Object.fromEntries(ROLES.map(r=>[r.name,{model:r.model,model_reasoning_effort:r.effort}])))} })
+    const result=await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(Object.fromEntries(Object.entries(this.workers.selectedRoles()).map(([name, value])=>[name,{model:value.model,model_reasoning_effort:value.reasoningEffort}])))} })
     this.workers.assertIdentity()
     return JSON.parse(result.stdout)
   }
@@ -99,16 +99,14 @@ export class Workflow {
     } finally {if(existsSync(index))unlinkSync(index)}
   }
   private overlaps(left: string[], right: string[]) { return left.some(a=>right.some(b=>a===b || a.startsWith(b+'/') || b.startsWith(a+'/'))) }
-  private role(plan: Plan, name: string): ResolvedRole {
-    const role = resolveRole(name, this.skillRoot ?? this.workers.workflowSkillDir, this.workers.implementationStandardDir), expected = plan.roles[name]
-    if (!expected || role.model!==expected.model || role.effort!==expected.model_reasoning_effort) throw new Error(`Configured role/model/effort mismatch: ${name}`)
-    return role
+  private role(_plan: Plan, name: string) {
+    return this.workers.captureRole(name, ROLES.map(role => role.name))
   }
-  private async start(run: Run, id: string, role: ResolvedRole, cwd: string, name: string, text: string, boundary?: Boundary, idempotencyKey?: string) {
+  private async start(run: Run, id: string, role: ReturnType<WorkflowWorkers['captureRole']>, cwd: string, name: string, text: string, boundary: Boundary, idempotencyKey?: string) {
     await this.capacity(run)
-    await this.workers.create(run.parent,{id,name,cwd,role:role.name,model:role.model,effort:role.effort,managed:true,boundary})
+    await this.workers.create(run.parent,{id,name,cwd,role:role.role,profile:role.profile,execution:role.execution,managed:true,boundary})
     const worker = await this.workers.get(run.parent,id)
-    if (worker.model!==role.model || worker.effort!==role.effort) throw new Error('Runtime model/effort differs from required role; task was not started')
+    if (worker.model!==role.execution.model || worker.effort!==role.execution.reasoningEffort) throw new Error('Runtime model/effort differs from required role; task was not started')
     return this.workers.append(run.parent,id,text,true,idempotencyKey)
   }
   private async capacity(run: Run) {
