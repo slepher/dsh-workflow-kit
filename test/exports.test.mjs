@@ -10,7 +10,7 @@ test("exports the workflow boundary", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
   assert.deepEqual(Object.keys(manifest.exports), [".", "./client"]);
-  assert.ok(manifest.files.includes("lib") && manifest.files.includes("cordis.patch.yml"));
+  assert.ok(manifest.files.includes("lib") && manifest.files.includes("profiles") && manifest.files.includes("cordis.patch.yml"));
   assert.equal(manifest.exports["./client"].default, "./lib/client.js");
   assert.equal(manifest.dsh.client.platform, "web");
   assert.equal("dsh-codex-kit-backend" in manifest.dependencies, false);
@@ -20,7 +20,10 @@ test("exports the workflow boundary", () => {
   assert.equal(JSON.parse(lock).packages["node_modules/dsh-codex-kit-backend"], undefined);
   assert.equal("dsh-codex-kit" in manifest.dependencies, false);
   assert.equal(manifest.peerDependenciesMeta.react.optional, true);
-  assert.equal(manifest.peerDependenciesMeta["@deepseek-ai/dsh-client-connection"].optional, true);
+  // The Host half imports the connection request/response schemas at runtime, so
+  // this peer must stay installable; marking it optional left an isolated
+  // consumer without the package and failed at import time.
+  assert.equal(manifest.peerDependenciesMeta["@deepseek-ai/dsh-client-connection"], undefined);
   const patch = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
   assert.match(patch, /id: dsh-workflow-kit\s+name: dsh-workflow-kit/);
 });

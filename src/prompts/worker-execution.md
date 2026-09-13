@@ -27,4 +27,4 @@ DSH execution rules take precedence over conflicting generic protocol wording:
 - Optional diagnostics reuse the task/attempt evidence. No per-command reports,
   mandatory retrospectives or no-incident records. Missing diagnostics never gate work.
 
-Never read or request the dispatcher-only `codex-workflow/SKILL.md`.
+Never read or request the manager-only `codex-workflow/SKILL.md`.

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { installProfileRpc } from "../lib/profile-rpc.js";
 import { fixture } from "./native-fixture.mjs";
@@ -47,7 +46,7 @@ async function harness(f) {
   await app.plugin({ name: "sessions-stub", apply: ctx => { new SessionsStub(ctx, f.ctx.sessions); } });
   await app.plugin({ name: "session-persistence-stub", apply: ctx => { new SessionPersistenceStub(ctx); } });
   const fiber = app.inject(["tools", "agents", "sessions", "subagents", "codexExecution"],
-    ctx => installProfileRpc(ctx, f.configuration, f.store, "a"));
+    ctx => installProfileRpc(ctx, f.configuration, f.store, () => "a"));
   await fiber;
   return { app, fiber, route: app.get("webServer").prefixes.get("/workflow") };
 }
@@ -85,6 +84,13 @@ test("workflow profile channel mounts on the real fiber and answers carrier requ
   assert.equal(profiles.json.rpcId, "test-id");
   assert.equal(profiles.json.result.value.selectedProfile, "a");
 
+  // The settings page reads the catalog with no Session at all.
+  const configurations = await call(route, envelope("configurations", {}));
+  assert.equal(configurations.json.result.ok, true);
+  assert.equal(configurations.json.result.value.defaultConfig, "a");
+  assert.equal(configurations.json.result.value.roleNames.length, 7);
+  assert.equal((await call(route, envelope("configurations", { sessionId: "parent" }))).json.result.ok, false);
+
   const selected = await call(route, envelope("select-profile", { sessionId: "parent", profileId: "b" }));
   assert.equal(selected.json.result.value.selectedProfile, "b");
   assert.equal(f.store.selectedProfile("parent"), "b");
@@ -96,11 +102,12 @@ test("workflow profile channel mounts on the real fiber and answers carrier requ
   assert.equal((await call(route, envelope("profiles", { sessionId: "missing" }))).json.result.ok, false);
   assert.equal((await call(route, envelope("select-profile", { sessionId: "parent", profileId: "missing" }))).json.result.ok, false);
   assert.equal((await call(route, envelope("profiles", { sessionId: "parent", ownerId: "fake" }))).json.result.ok, false);
-  rmSync(join(f.configuration.home, "config/profiles/b.json"));
-  const invalidated = await call(route, envelope("reload-configuration", { sessionId: "parent" }));
-  assert.equal(invalidated.json.result.ok, true);
-  assert.equal(invalidated.json.result.value.selectedProfile, "b");
-  assert.equal(invalidated.json.result.value.profiles.some(profile => profile.id === "b"), false);
+  // Built-in configurations are package content, so the catalog is stable and
+  // the Session keeps the selection it recorded.
+  const reread = await call(route, envelope("profiles", { sessionId: "parent" }));
+  assert.equal(reread.json.result.ok, true);
+  assert.equal(reread.json.result.value.selectedProfile, "b");
+  assert.deepEqual(reread.json.result.value.configs.map(config => config.id), ["a", "b"]);
   assert.equal(f.calls.length, 0, "profile operations never start a model or create a child");
 });
 
@@ -115,7 +122,7 @@ test("workflow profile channel keeps connection carrier semantics", async t => {
   // A path that is not the channel's `POST /workflow/<endpoint>` shape never dispatches a known endpoint.
   const nested = await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow/unknown/segment" });
   assert.equal(nested.json.result.ok, false);
-  const mismatched = await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow/reload-configuration" });
+  const mismatched = await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow/configurations" });
   assert.equal(mismatched.status, 200);
   assert.equal(mismatched.json.result.ok, false);
   assert.match(mismatched.json.result.error.message, /does not match endpoint/);
@@ -139,7 +146,7 @@ test("profile selections retain submission order across asynchronous Session val
         async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(envelope(endpoint, payload))) } },
       { writeHead() {}, end() {} }); return () => {}; } },
   };
-  installProfileRpc(ctx, f.configuration, f.store, "a");
+  installProfileRpc(ctx, f.configuration, f.store, () => "a");
   const first = handler("select-profile", { sessionId: "cold", profileId: "b" }, new AbortController().signal);
   const second = handler("select-profile", { sessionId: "cold", profileId: "a" }, new AbortController().signal);
   release();

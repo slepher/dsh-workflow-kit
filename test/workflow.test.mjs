@@ -16,10 +16,10 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1"); mkdirSync(join(generation, "tasks"), { recursive: true });
   writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
   writeFileSync(join(generation, "tasks.md"), ["T001", "T002", "T003", "T004", "T005", "T006", "T007"].map(id => `## ${id}\n- State: executable\n- Revision: 1\n`).join(""));
-  writeFileSync(join(generation, "tasks", "T001.md"), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: dispatcher\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nInspect.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
+  writeFileSync(join(generation, "tasks", "T001.md"), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nInspect.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
   writeFileSync(join(generation, "tasks", "T002.md"), `- Revision: 1\n- Kind: implementation\n- Role: def_coding_worker\n- Depends on: []\n- Owned paths: ["a.txt"]\n- Resources: []\n- Inputs: ["${base}"]\n- Review: independent\n## Goal\nChange file.\n## Acceptance\nTarget receives change.\n## Constraints\nOwn a.txt.\n## Validation\nRead file.\n## Return when\nDone.\n`);
-  for (const id of ["T003", "T004", "T005", "T006", "T007"]) writeFileSync(join(generation, "tasks", `${id}.md`), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: dispatcher\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nRecover ${id}.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
-  const f = fixture(t, { root, cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { model: role.model, reasoningEffort: role.effort }])) });
+  for (const id of ["T003", "T004", "T005", "T006", "T007"]) writeFileSync(join(generation, "tasks", `${id}.md`), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nRecover ${id}.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
   const { store, workers } = f, workflow = new Workflow(workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input)).catch(error => { throw new Error(`${input.action} ${input.task ?? ""}: ${error.message}`, { cause: error }); });
   const finish = async (id, turnId, text) => f.run(async () => {
@@ -43,7 +43,7 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   await action({ action: "accept", task: "T001" });
   const retriedReport = await f.run( async () => (await workers.get("parent", attempt.workerId)).reports.find(report => report.turnId === attempt.turnId));
   assert.equal(retriedReport.acknowledgedAt, acceptedReport.acknowledgedAt, "retry reuses the same accepted report");
-  assert.equal(new WorkflowStore(join(root, "state")).read().runs[0].attempts[0].state, "accepted", "retry persists accepted state for restart");
+  assert.equal(new WorkflowStore(f.store.stateDir).read().runs[0].attempts[0].state, "accepted", "retry persists accepted state for restart");
   await action({ action: "integrate", task: "T001" });
   summary = await action({ action: "release", task: "T001", processesStopped: true });
   assert.equal(summary.tasks[0].state, "released");

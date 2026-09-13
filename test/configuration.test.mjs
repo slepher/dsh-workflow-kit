@@ -1,69 +1,68 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { WorkflowConfiguration, configurationDirectory, parseProfile, installConfiguration } from "../lib/configuration.js";
-import { ROLES } from "../lib/roles.js";
+import { WorkflowConfiguration, loadBuiltinProfiles, parseProfile, roleInstructions } from "../lib/configuration.js";
+import { SHIPPED_PROFILES, shippedProfile } from "../lib/index.js";
 
-test("profile capture is detached, reload isolates bad files and never falls back", t => {
-  const home = mkdtempSync(join(tmpdir(), "workflow-profile-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const directory = configurationDirectory("workflow-kit", home);
-  mkdirSync(join(directory, "roles"), { recursive: true });
-  mkdirSync(join(directory, "profiles"));
-  writeFileSync(join(directory, "roles/reviewer.md"), "A instructions");
-  const profile = model => JSON.stringify({ roles: { reviewer: { model, reasoningEffort: "high" } } });
-  writeFileSync(join(directory, "profiles/a.json"), profile("model-a"));
-  writeFileSync(join(directory, "profiles/b.json"), profile("model-b"));
-  const catalog = new WorkflowConfiguration("workflow-kit", home);
-  const a = catalog.capture("a", "reviewer");
-  assert.equal(catalog.capture("b", "reviewer").model, "model-b");
-  writeFileSync(join(directory, "roles/reviewer.md"), "B instructions");
-  writeFileSync(join(directory, "profiles/a.json"), "invalid");
-  catalog.reload();
-  assert.deepEqual(a, { model: "model-a", reasoningEffort: "high", developerInstructions: "A instructions" });
-  assert.equal(catalog.capture("b", "reviewer").developerInstructions, "B instructions");
-  assert.throws(() => catalog.capture("a", "reviewer"), /unavailable/);
-  assert.throws(() => catalog.capture(undefined, "reviewer"), /No workflow profile/);
-  assert.throws(() => catalog.capture("b", "reviewer", ["planner"]), /required roles/);
-  assert.equal(catalog.view(["planner"]).profiles[0].missingRequiredRoles[0], "planner");
-  assert.equal(catalog.view().diagnostics[0].file, "profiles/a.json");
-  symlinkSync(join(directory, "roles/reviewer.md"), join(directory, "roles/linked.md"));
-  catalog.reload();
-  assert.ok(catalog.view().diagnostics.some(item => item.file === "roles/linked.md"));
+/** Deterministic instruction resolver standing in for the installed skills. */
+const instructions = role => `Instructions for ${role}`;
+const profile = roles => ({ roles });
+
+test("the shipped configurations match the role catalog they are generated from", () => {
+  const builtin = loadBuiltinProfiles();
+  assert.deepEqual(Object.keys(builtin).sort(), [...SHIPPED_PROFILES].sort());
+  for (const id of SHIPPED_PROFILES) {
+    assert.deepEqual(builtin[id], parseProfile(shippedProfile(id)), `${id} matches its generator`);
+  }
 });
 
-test("configuration rejects escape paths and strict mapping errors", t => {
-  const home = mkdtempSync(join(tmpdir(), "workflow-path-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  for (const path of ["", ".", "../escape", "/tmp/escape", "nested/../escape"]) assert.throws(() => configurationDirectory(path, home));
-  symlinkSync(tmpdir(), join(home, "escape"));
-  assert.throws(() => configurationDirectory("escape/new", home), /symlink/);
-  for (const value of [{ roles: {}, extra: true }, { roles: { reviewer: { model: "m" } } }, { roles: { reviewer: { model: "m", reasoningEffort: "high", extra: true } } }]) assert.throws(() => parseProfile(value));
-  assert.equal(new WorkflowConfiguration("missing", home).view().profiles.length, 0);
+test("capture resolves the effective role and composes instructions at call time", () => {
+  const catalog = new WorkflowConfiguration(loadBuiltinProfiles(),
+    roleInstructions("/skills/codex-workflow", "/skills/audit-implementation-simplicity"));
+  const captured = catalog.capture("gpt-workflow", "planner");
+  assert.equal(captured.provider, "codex");
+  assert.equal(captured.model, "gpt-6-astra");
+  // The deployment's installed skill layout decides the instruction paths.
+  assert.ok(captured.developerInstructions.includes("/skills/codex-workflow/references/roles/planner.md"));
+  assert.ok(captured.developerInstructions.includes("/skills/audit-implementation-simplicity/SKILL.md"));
+  assert.throws(() => catalog.capture(undefined, "planner"), /No workflow profile/);
+  assert.throws(() => catalog.capture("missing", "planner"), /unavailable/);
+  // The role set is fixed, so an unknown role is simply absent from every profile.
+  assert.throws(() => catalog.capture("gpt-workflow", "not_a_role"), /lacks required roles/);
 });
 
-test("explicit installation validates references and preserves modified and custom files", t => {
-  const home = mkdtempSync(join(tmpdir(), "workflow-install-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const skills = join(home, "skills"), standard = join(home, "standard");
-  mkdirSync(join(skills, "references/roles"), { recursive: true });
-  mkdirSync(standard);
-  writeFileSync(join(standard, "SKILL.md"), "standard");
-  const catalog = new WorkflowConfiguration("config", home);
-  assert.throws(() => installConfiguration(catalog, skills, standard), /ENOENT/);
-  assert.equal(existsSync(join(home, "config")), false);
-  for (const role of ROLES) writeFileSync(join(skills, "references/roles", role.protocol), role.name);
-  installConfiguration(catalog, skills, standard);
-  assert.equal(catalog.view().profiles.length, 1);
-  assert.equal(Object.keys(catalog.view().profiles[0].roles).length, 7);
-  assert.ok(catalog.capture("workflow-default", "reviewer").developerInstructions.includes(skills));
-  installConfiguration(catalog, skills, standard);
-  const roleFile = join(home, "config/roles/reviewer.md");
-  writeFileSync(roleFile, "user changed this");
-  writeFileSync(join(home, "config/roles/custom.md"), "custom instructions");
-  assert.throws(() => installConfiguration(catalog, skills, standard), /Preserved.*reviewer.md/);
-  assert.equal(readFileSync(roleFile, "utf8"), "user changed this");
-  assert.equal(readFileSync(join(home, "config/roles/custom.md"), "utf8"), "custom instructions");
+test("a captured execution is detached from later stored-layer changes", () => {
+  const catalog = new WorkflowConfiguration(
+    { a: profile({ planner: { provider: "p", model: "model-a", reasoningEffort: "high" } }) }, instructions);
+  const captured = catalog.capture("a", "planner");
+  catalog.setUserConfigs({ a: { roles: { planner: { provider: "p", model: "model-b", reasoningEffort: "low" } } } });
+  assert.deepEqual(captured,
+    { provider: "p", model: "model-a", reasoningEffort: "high", developerInstructions: "Instructions for planner" });
+  assert.equal(catalog.capture("a", "planner").model, "model-b");
+});
+
+test("configuration parsing rejects unknown fields and incomplete mappings", () => {
+  for (const value of [
+    { roles: {}, extra: true },
+    { roles: { planner: { model: "m", reasoningEffort: "high" } } },
+    { roles: { planner: { provider: "p", model: "m" } } },
+    { roles: { planner: { provider: "p", model: "m", reasoningEffort: "high", extra: true } } },
+    { roles: { planner: { provider: "  ", model: "m", reasoningEffort: "high" } } },
+    { roles: { planner: { provider: "p", model: "m", reasoningEffort: "sometimes" } } },
+    { roles: { "Bad Id": { provider: "p", model: "m", reasoningEffort: "high" } } },
+  ]) assert.throws(() => parseProfile(value));
+  assert.deepEqual(parseProfile({ roles: { planner: { provider: "p", model: "m", reasoningEffort: "high" } } }).roles.planner,
+    { provider: "p", model: "m", reasoningEffort: "high" });
+});
+
+test("the role set is fixed and unrelated stored roles are ignored", () => {
+  const catalog = new WorkflowConfiguration({}, instructions);
+  catalog.setUserConfigs({ custom: { roles: {
+    not_a_role: { provider: "p", model: "m", reasoningEffort: "high" },
+    planner: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "max" },
+  } } });
+  const custom = catalog.view().configs.find(config => config.id === "custom");
+  assert.deepEqual(Object.keys(custom.roles).sort(), [...catalog.view().roleNames].sort());
+  assert.equal("not_a_role" in custom.roles, false);
+  assert.equal(custom.roles.planner.model, "deepseek-flash");
+  assert.equal(custom.builtin, false);
 });

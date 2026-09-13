@@ -6,7 +6,6 @@ import type {} from "@deepseek-ai/dsh-session-persistence";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { WorkflowConfiguration } from "./configuration.js";
 import type { WorkflowStore } from "./store.js";
-import { ROLES } from "./roles.js";
 
 const CHANNEL = "/workflow";
 /** The browser carrier buffers one JSON body; profile payloads carry Session addresses and profile ids. */
@@ -64,27 +63,33 @@ function endpointOf(pathname: string): string | undefined {
  * keeps the route and its disposer owned by this fiber and reuses the public
  * Connection trust fence and envelope format.
  */
-export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, store: WorkflowStore, defaultProfile?: string): void {
+export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, store: WorkflowStore, defaultProfile: () => string | undefined): void {
   ctx.inject(["connection", "webServer"], scope => {
     let queue: Promise<unknown> = Promise.resolve();
     const dispatch = (endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult<unknown>> => {
       const operation = queue.then(async () => {
         signal.throwIfAborted();
-        if (!["profiles", "select-profile", "reload-configuration"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
+        if (!["configurations", "profiles", "select-profile"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid workflow request");
         const value = payload as Record<string, unknown>;
+        // Built-in configurations are package content and the stored layer is
+        // already live in the Host, so a read needs no refresh control.
+        if (endpoint === "configurations") {
+          if (Object.keys(value).length > 0) throw new Error("Invalid workflow request");
+          return { defaultConfig: defaultProfile() ?? null, ...catalog.view() };
+        }
         const fields = endpoint === "select-profile" ? ["sessionId", "profileId"] : ["sessionId"];
         if (Object.keys(value).some(key => !fields.includes(key)) || typeof value.sessionId !== "string" || !value.sessionId) throw new Error("A native Session address is required; caller identities are not accepted");
         const id = SessionId(value.sessionId);
         const header = scope.sessions.get(id)?.header ?? (await scope.get("sessionPersistence")?.stat(id, { signal }))?.header;
         signal.throwIfAborted();
         if (header?.id !== id) throw new Error("Native Session is unavailable");
-        if (endpoint === "reload-configuration") catalog.reload();
+        const listed = catalog.view();
         if (endpoint === "select-profile") {
-          if (typeof value.profileId !== "string" || !catalog.view().profiles.some(profile => profile.id === value.profileId)) throw new Error("Selected workflow profile is unavailable");
+          if (typeof value.profileId !== "string" || !listed.configs.some(config => config.id === value.profileId)) throw new Error("Selected workflow profile is unavailable");
           store.selectProfile(id, value.profileId);
         }
-        return { selectedProfile: store.selectedProfile(id, defaultProfile) ?? null, ...catalog.view(ROLES.map(role => role.name)) };
+        return { selectedProfile: store.selectedProfile(id, defaultProfile()) ?? null, ...listed };
       });
       queue = operation.catch(() => {});
       return operation.then(value => ({ ok: true as const, value }), error => ({ ok: false as const,

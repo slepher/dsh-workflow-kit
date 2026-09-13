@@ -12,6 +12,7 @@ export interface Boundary {
 export interface Role {
   name: string;
   description: string;
+  provider: string;
   model: string;
   effort: Effort;
   protocol: string;

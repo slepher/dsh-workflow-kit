@@ -11,7 +11,7 @@ export function assertHeadlessFiles(files) {
 export function copyWorkflowSource(root, target) {
   mkdirSync(target, { recursive: true });
   for (const file of ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.client.json", "README.md", "cordis.patch.yml"]) cpSync(join(root, file), join(target, file));
-  for (const directory of ["src", "scripts", "docs"]) cpSync(join(root, directory), join(target, directory), { recursive: true, filter: path => !path.split("/").includes("lib") });
+  for (const directory of ["src", "scripts", "docs", "profiles"]) cpSync(join(root, directory), join(target, directory), { recursive: true, filter: path => !path.split("/").includes("lib") });
 }
 
 export function assertCombinationDependencies(name, dependencies) {

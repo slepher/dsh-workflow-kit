@@ -1,6 +1,6 @@
 # dsh-workflow-kit
 
-Workflow owns role/profile files, native Session profile selections, task contracts, lanes, acceptance, integration and release. Codex execution runs through DSH native children and the single `dsh-codex-app-provider` Host plugin. The same package provides a `./client` profile selector in the native Conversation header.
+Workflow owns role/profile files, native Session profile selections, task contracts, lanes, acceptance, integration and release. Codex execution runs through DSH native children and the single `dsh-codex-app-provider` Host plugin. The same package provides a `./client` half: a configuration picker in the composer and the Workflow page in DSH settings.
 
 ## Runtime configuration
 
@@ -12,28 +12,20 @@ Load `dsh-codex-app-provider` before this package. Configure one workflow entry:
     stateDir: /absolute/isolated/state/workflow
     workflowSkillDir: /absolute/skills/codex-workflow
     implementationStandardDir: /absolute/skills/audit-implementation-simplicity
-    subdir: workflow-kit
-    defaultProfile: workflow-default
+    defaultProfile: gpt-workflow
 ```
 
-`stateDir` contains workflow records, acceptance and native child creation snapshots. Native Session/thread execution state and terminal report contents remain execution-owned. Existing legacy data is retained. `workflowSkillDir` identifies the installed task-contract tooling and role protocols. The optional implementation standard directory defaults to the sibling `audit-implementation-simplicity` skill.
+`stateDir` contains workflow records, acceptance and native child creation snapshots. Native Session/thread execution state and terminal report contents remain execution-owned. Existing legacy data is retained. `workflowSkillDir` identifies the installed task-contract tooling and role protocols; `implementationStandardDir` defaults to the sibling `audit-implementation-simplicity` skill.
 
-`subdir` is relative to DSH home (`DSH_HOME`, or `~/.dsh`), independent of cwd. Absolute paths, dot segments and symlink escapes are rejected. `roles/*.md` supplies complete developer instructions; `profiles/*.json` maps role IDs to explicit model and reasoningEffort values. The Host validates ordinary files, isolates invalid profiles and never falls back to another profile. Configuration is refreshed explicitly.
+## Configurations
 
-`defaultProfile` initializes each native parent Session's selection once. An unset default leaves the selection empty. Switching profiles affects future children; existing children keep their recorded model, effort, instructions and execution limits through continuation and cold Agent resume. A deleted selected profile stays selected and blocks new creation until a valid selection is made.
+The two configurations this package ships are plugin content: `profiles/gpt-workflow.json` (`codex` provider) and `profiles/ds-workflow.json` (`deepseek-official/deepseek-flash`, with the codex `high`/`medium` effort split translated to `max`/`high`). Each maps the fixed role catalog to explicit `provider`, `model` and `reasoningEffort` values. Role developer instructions are composed at run time from `lib/generated/prompts.ts` and the deployment's installed skill layout; nothing is installed into DSH home, and per-deployment state lives only in the `dsh-workflow-kit` settings namespace.
+
+The Host resolves each role through three layers: the stored user override, the shipped configuration, then the shipped role default. Stored overrides are sparse, so editing one role leaves the others inherited, and clearing a configuration's stored section reverts it whole. A stored configuration whose id matches a shipped one overrides it; any other id is a user-authored configuration. The Workflow settings page writes those overrides as path mutations, and the composer picker only selects.
+
+`defaultProfile` is the deployment fallback for the stored default: the settings page's `defaultConfig` wins, and an unset stored default falls back to this entry config. The effective default initializes each native parent Session's selection once. An unset default leaves the selection empty. Switching configurations affects future children; existing children keep their recorded provider, model, effort, instructions and execution limits through continuation and cold Agent resume. A deleted selected configuration stays selected and blocks new creation until a valid selection is made.
 
 The Host registers `codex_workflow` for adopted task contracts and uses native child creation, prompt queue/steer and interruption. It reads execution facts through `codexExecution.read`; a native completed turn remains pending workflow acceptance. Unknown execution never authorizes takeover or redispatch. Workflow unload removes its tool and profile RPC; it does not close Codex execution or delete Session history.
-
-## Install role configuration
-
-Installation is explicit and uses the target deployment's effective DSH bundle, profile, home and ordered patch layers. The command does not start a Host or create a missing profile:
-
-```bash
-npm run install:configuration -- --profile workflow-dev --dsh-home /absolute/dsh-home
-# Add the same repeatable --patch paths used by the deployment when applicable.
-```
-
-The installer and Host share the same directory resolver. Installation requires literal path fields and enabled state in the effective configuration; it does not evaluate `!!js`. DSH overlays replace the complete `config` value, so include the required fields in the final override. The installer checks installed skill references, writes seven role files and `workflow-default.json`, and reports different existing files without overwriting them. Custom files remain untouched. After installation, use the profile selector's Refresh action in an already running Host.
 
 ## Build and validation
 
@@ -47,7 +39,7 @@ npm run build
 node --test --test-isolation=none test/install-configuration.test.mjs test/prepare-local.test.mjs test/profile-rpc.test.mjs test/host.test.mjs test/native-workers.test.mjs test/backend-consumer.test.mjs test/workflow.test.mjs test/configuration.test.mjs test/store.test.mjs
 ```
 
-`prepare:local` checks local tarballs before running locked `npm ci`; it does not build or modify another checkout. The compiled Host, same-package client, configuration installer and `scripts/workflowctl.py` ship together. Native DSH Conversation supplies the child transcript and execution controls; the workflow client supplies only profile controls.
+`prepare:local` checks local tarballs before running locked `npm ci`; it does not build or modify another checkout. The compiled Host, its shipped `profiles/` content, the same-package client and `scripts/workflowctl.py` ship together. Native DSH Conversation supplies the child transcript and execution controls; the workflow client supplies the composer configuration picker and the Workflow settings page.
 
 ## Remaining validation and development work
 

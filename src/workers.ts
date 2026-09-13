@@ -45,7 +45,7 @@ export class WorkflowWorkers {
   private readonly request = new AsyncLocalStorage<{ parent: Agent; session: Agent["session"]; signal: AbortSignal }>();
 
   constructor(readonly ctx: Context, readonly store: WorkflowStore, readonly configuration: WorkflowConfiguration,
-    readonly defaultProfile?: string, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string) {}
+    readonly defaultProfile?: () => string | undefined, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string) {}
 
   run<T>(parent: Agent, signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
     return Promise.resolve(this.request.run({ parent, session: parent.session, signal }, () => { this.assertIdentity(); return operation(); }));
@@ -59,15 +59,15 @@ export class WorkflowWorkers {
 
   captureRole(role: string, requiredRoles: readonly string[] = []) {
     this.assertIdentity();
-    const profile = this.store.selectedProfile(String(this.context().session.id), this.defaultProfile);
+    const profile = this.store.selectedProfile(String(this.context().session.id), this.defaultProfile?.());
     return { role, profile: profile!, execution: this.configuration.capture(profile, role, requiredRoles) };
   }
 
   selectedRoles() {
     this.assertIdentity();
-    const selected = this.store.selectedProfile(String(this.context().session.id), this.defaultProfile);
+    const selected = this.store.selectedProfile(String(this.context().session.id), this.defaultProfile?.());
     if (selected === undefined) throw new Error("No workflow profile selected");
-    const profile = this.configuration.view().profiles.find(profile => profile.id === selected);
+    const profile = this.configuration.view().configs.find(config => config.id === selected);
     if (profile === undefined) throw new Error(`Selected workflow profile is unavailable: ${selected}`);
     return profile.roles;
   }
@@ -137,7 +137,7 @@ export class WorkflowWorkers {
     if (initial) {
       const created = await this.ctx.subagents.startContinuable({ provider: "spawn", label: record.name, childId: SessionId(id), signal,
         request: { parent, prompt: [{ type: "text", text }], agentOptions: {
-          provider: "codex", model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
+          provider: record.execution.provider, model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
           execution: { developerInstructions: record.execution.developerInstructions,
             boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
         } } });

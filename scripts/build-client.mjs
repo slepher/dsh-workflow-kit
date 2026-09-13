@@ -5,7 +5,15 @@ await build({
   entryPoints: [`${root}src/client/index.ts`], outfile: `${root}lib/client.js`,
   tsconfig: `${root}tsconfig.client.json`,
   bundle: true, format: "cjs", platform: "browser", target: "es2022",
-  external: ["react", "react/jsx-runtime"],
+  // The shell's module table supplies the baseline identities, so the bundle
+  // must request them instead of inlining a second copy.
+  external: [
+    "react", "react/jsx-runtime", "react-dom", "react-dom/client",
+    "@deepseek-ai/cordis",
+    "@deepseek-ai/dsh-client-store",
+    "@deepseek-ai/dsh-client-ui-slots",
+    "@deepseek-ai/dsh-client-ui-primitives",
+  ],
   banner: { js: 'window.__ModuleLoader__.load({ id: "dsh-workflow-kit", factory: (require) => { var module = { exports: {} }; var exports = module.exports;' },
   footer: { js: "return module.exports; } });" },
 });

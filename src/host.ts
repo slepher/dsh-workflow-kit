@@ -1,8 +1,10 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type {} from "dsh-codex-app-provider";
+import type {} from "@deepseek-ai/dsh-settings";
 import { installProfileRpc } from "./profile-rpc.js";
-import { WorkflowConfiguration } from "./configuration.js";
+import { WorkflowConfiguration, loadBuiltinProfiles, roleInstructions } from "./configuration.js";
+import { WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, type WorkflowSettings } from "./settings.js";
 import { WorkflowStore } from "./store.js";
 import { Workflow } from "./workflow.js";
 import { WorkflowWorkers } from "./workers.js";
@@ -10,15 +12,33 @@ import { WorkflowWorkers } from "./workers.js";
 export const name = "dsh-workflow-kit";
 export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution"];
 
-export interface Config { stateDir: string; workflowSkillDir?: string; implementationStandardDir?: string; subdir?: string; defaultProfile?: string }
+export interface Config { stateDir: string; workflowSkillDir?: string; implementationStandardDir?: string; defaultProfile?: string }
 
 /** Install workflow policy over native DSH children and read-only Codex execution facts. */
 export function apply(ctx: Context, config?: Config): void {
   if (!config?.stateDir) throw new Error("stateDir is required for workflow execution");
-  const catalog = new WorkflowConfiguration(config.subdir);
+  // Built-in configurations are package content; the settings namespace below
+  // carries the only per-deployment state.
+  const catalog = new WorkflowConfiguration(
+    loadBuiltinProfiles(),
+    roleInstructions(config.workflowSkillDir, config.implementationStandardDir),
+  );
   const store = new WorkflowStore(config.stateDir);
-  installProfileRpc(ctx, catalog, store, config.defaultProfile);
-  const consumer = new WorkflowWorkers(ctx, store, catalog, config.defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
+  // The user's stored choice wins; the entry config is the deployment fallback
+  // for a Host whose settings namespace holds no default.
+  let storedDefault = "";
+  const defaultProfile = (): string | undefined => storedDefault || config.defaultProfile;
+  ctx.inject(["settings"], scope => {
+    const settings = scope.settings.register(WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, { applies: "live" });
+    const sync = (value: WorkflowSettings): void => {
+      storedDefault = value.defaultConfig;
+      catalog.setUserConfigs(value.configs);
+    };
+    sync(settings.get());
+    scope.effect(() => settings.watch(next => { sync(next); }), "dsh-workflow-kit: stored configurations");
+  });
+  installProfileRpc(ctx, catalog, store, defaultProfile);
+  const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
   const workflow = new Workflow(consumer, config.workflowSkillDir);
   ctx.tools.register(defineTool({
     name: "codex_workflow",

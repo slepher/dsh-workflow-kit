@@ -1,19 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkflowConfiguration } from "../lib/configuration.js";
 import { WorkflowStore } from "../lib/store.js";
 import { WorkflowWorkers } from "../lib/workers.js";
 
-export function fixture(t, { root, cwd, roles = { reviewer: { model: "model-a", reasoningEffort: "high" } } } = {}) {
-  const home = root ?? mkdtempSync(join(tmpdir(), "native-workflow-"));
-  cwd ??= home;
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  mkdirSync(join(home, "config/roles"), { recursive: true }); mkdirSync(join(home, "config/profiles"));
-  for (const name of Object.keys(roles)) writeFileSync(join(home, `config/roles/${name}.md`), name === "reviewer" ? "Reviewer instructions" : `Execute ${name}`);
-  for (const id of ["a", "b"]) writeFileSync(join(home, `config/profiles/${id}.json`), JSON.stringify({ roles: Object.fromEntries(Object.entries(roles).map(([name, value]) => [name, id === "b" ? { ...value, model: "model-b" } : value])) }));
-  const configuration = new WorkflowConfiguration("config", home), store = new WorkflowStore(join(home, "state"));
+/**
+ * Compose a workflow Host around synthetic package configurations: two shipped
+ * profiles (`a`, `b`) over one role set, with runtime-composed instructions.
+ * @param t - the test context owning the temporary state directory.
+ * @param options - child cwd and the role set both profiles carry.
+ * @returns the composed workers, fake native services, and captured calls.
+ */
+export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model: "model-a", reasoningEffort: "high" } } } = {}) {
+  const stateDir = mkdtempSync(join(tmpdir(), "native-workflow-"));
+  cwd ??= stateDir;
+  t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const builtin = Object.fromEntries(["a", "b"].map(id => [id, { roles: Object.fromEntries(
+    Object.entries(roles).map(([name, value]) => [name, id === "b" ? { ...value, model: "model-b" } : value])) }]));
+  const configuration = new WorkflowConfiguration(builtin,
+    role => role === "reviewer" ? "Reviewer instructions" : `Execute ${role}`);
+  const store = new WorkflowStore(join(stateDir, "state"));
   const session = { id: "parent", header: { cwd } }, parent = { id: "parent", session, status: "running" };
   const agents = new Map([[parent.id, parent]]), sessions = new Map([[session.id, session]]), facts = new Map(), calls = [];
   const begin = (id, options, text) => {
@@ -32,7 +40,7 @@ export function fixture(t, { root, cwd, roles = { reviewer: { model: "model-a", 
     },
     interrupt(id) { calls.push({ id, interrupt: true }); facts.get(id).state = "interrupt-requested"; },
   } };
-  const workers = new WorkflowWorkers(ctx, store, configuration, "a", "/skills/codex-workflow");
+  const workers = new WorkflowWorkers(ctx, store, configuration, () => "a", "/skills/codex-workflow");
   const run = operation => workers.run(parent, new AbortController().signal, operation);
   const create = async id => {
     const snapshot = workers.captureRole("reviewer");
@@ -46,4 +54,3 @@ export function fixture(t, { root, cwd, roles = { reviewer: { model: "model-a", 
   };
   return { workers, ctx, parent, store, facts, calls, configuration, run, create, finish };
 }
-

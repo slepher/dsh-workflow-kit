@@ -115,7 +115,9 @@ def contract(path: Path, roles: set[str]) -> dict[str, str]:
         "def_coding_worker", "sup_coding_worker"
     }:
         raise Invalid(f"{path}: implementation requires a coding worker")
-    if fields["Review"] not in {"dispatcher", "independent"}:
+    # `manager` names the main agent that owns the generation; `dispatcher`
+    # is the older spelling of the same value and stays accepted.
+    if fields["Review"] not in {"manager", "dispatcher", "independent"}:
         raise Invalid(f"{path}: invalid Review")
     for key in ("Depends on", "Owned paths", "Resources", "Inputs"):
         values = array(fields, key, path)
@@ -243,7 +245,7 @@ def result_check(result: Path, contract_path: Path, review: Path | None) -> None
             raise Invalid("review references a different result")
         if checked["Verdict"] not in {"passed", "changes-required", "needs-decision"}:
             raise Invalid("invalid review Verdict")
-    # Identity validity is not acceptance; dispatcher checks actual outcomes,
+    # Identity validity is not acceptance; manager checks actual outcomes,
     # reviewer independence, required review presence and delivery separately.
 
 
