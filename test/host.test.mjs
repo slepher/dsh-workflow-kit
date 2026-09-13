@@ -52,12 +52,12 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   const missingParent = await tools.execute({ signal: new AbortController().signal, callId: "no-parent", name: "codex_workflow", arguments: { action: "status" } });
   assert.equal(missingParent.isError, true);
   assert.match(missingParent.content[0].text, /live parent agent/);
-  assert.deepEqual([...ctx.connection.channels.keys()], ["/workflow"]);
-  assert.equal(routes, 0, "host does not register the legacy browser RPC/SSE route");
+  assert.deepEqual([...ctx.connection.channels.keys()], [], "the browser profile channel is not registered through Connection's own fiber");
+  assert.equal(routes, 1, "host registers the workflow browser profile route on the Web server");
   assert.equal(existsSync(join(stateDir, "orchestration.json")), false, "read-only status writes no orchestration state file");
 
   await plugin.dispose();
-  assert.equal(ctx.connection.channels.size, 0);
+  assert.equal(routes, 0);
   assert.ok(ctx.get("codexExecution"), "workflow unload retains the independent provider");
   const afterUnload = await tools.execute({ signal: new AbortController().signal, callId: "ordinary-after", name: "ordinary_sentinel", arguments: {}, agent });
   assert.equal(afterUnload.isError, false); assert.equal(afterUnload.content[0].text, "ordinary-ok");

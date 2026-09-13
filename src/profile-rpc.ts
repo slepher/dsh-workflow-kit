@@ -1,16 +1,73 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-client-connection";
+import type { ConnectionRpcResult, ConnectionTrustRequest, HostConnectionHandle } from "@deepseek-ai/dsh-client-connection";
+import { clientRequestSchema, serverResponseSchema } from "@deepseek-ai/dsh-client-connection";
 import type {} from "@deepseek-ai/dsh-session-persistence";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { WorkflowConfiguration } from "./configuration.js";
 import type { WorkflowStore } from "./store.js";
 import { ROLES } from "./roles.js";
 
-/** The standard Connection transport supplies browser authentication and the Host/Origin fence. */
+const CHANNEL = "/workflow";
+/** The browser carrier buffers one JSON body; profile payloads carry Session addresses and profile ids. */
+const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+const INVALID_REQUEST_RPC_ID = "invalid-request";
+
+/** HTTP carrier facts this channel reads; the Web server's `node:http` request satisfies it structurally. */
+interface RpcRequest extends ConnectionTrustRequest {
+  readonly url?: string | undefined;
+  readonly method?: string | undefined;
+  readonly signal?: AbortSignal | undefined;
+  [Symbol.asyncIterator](): AsyncIterator<Buffer | string>;
+}
+
+/** HTTP carrier the Web server hands a route; `node:http` `ServerResponse` satisfies it structurally. */
+interface RpcResponse {
+  writeHead(status: number, headers?: Readonly<Record<string, string>>): unknown;
+  end(body?: string): unknown;
+}
+
+/** Route carrier the Web server exposes; the packages' `WebServer` satisfies it structurally. */
+interface WebServer {
+  register(route: { kind: "prefix"; path: string; handler: (req: RpcRequest, res: RpcResponse) => Promise<void> }): () => void;
+}
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    webServer: WebServer;
+  }
+}
+
+/** Read one carrier header; the request exposes either Fetch `Headers` or a node header record. */
+function headerOf(request: ConnectionTrustRequest, name: string): string | undefined {
+  if (typeof Headers !== "undefined" && request.headers instanceof Headers) return request.headers.get(name) ?? undefined;
+  const value = (request.headers as Readonly<Record<string, string | readonly string[] | undefined>>)[name];
+  return typeof value === "string" ? value : value?.[0];
+}
+
+/** Absolute endpoint segments below the channel prefix; an empty or malformed path has none. */
+function endpointOf(pathname: string): string | undefined {
+  if (!pathname.startsWith(`${CHANNEL}/`)) return undefined;
+  const endpoint = pathname.slice(CHANNEL.length + 1);
+  const malformed = endpoint.split("/").some(segment => segment === "" || segment === "." || segment === ".."
+    || !/^[A-Za-z0-9_$.-]+$/.test(segment));
+  return malformed ? undefined : endpoint;
+}
+
+/**
+ * Serve profile reads and selections on an authenticated browser channel.
+ *
+ * The route is registered directly against the injecting Context instead of
+ * through `connection.rpc.handle`: that registry reads the webServer it needs
+ * from the Connection service's own fiber, which declares only `webRuntime`,
+ * so the registration throws and the channel is never mounted. Registering here
+ * keeps the route and its disposer owned by this fiber and reuses the public
+ * Connection trust fence and envelope format.
+ */
 export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, store: WorkflowStore, defaultProfile?: string): void {
   ctx.inject(["connection", "webServer"], scope => {
     let queue: Promise<unknown> = Promise.resolve();
-    scope.connection.rpc.handle("/workflow", (endpoint, payload, signal) => {
+    const dispatch = (endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult<unknown>> => {
       const operation = queue.then(async () => {
         signal.throwIfAborted();
         if (!["profiles", "select-profile", "reload-configuration"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
@@ -32,6 +89,53 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
       queue = operation.catch(() => {});
       return operation.then(value => ({ ok: true as const, value }), error => ({ ok: false as const,
         error: { code: "workflow/rejected", message: error instanceof Error ? error.message : String(error), details: {} } }));
-    });
+    };
+    const respond = (res: RpcResponse, status: number, body?: unknown): void => {
+      if (body === undefined) { res.writeHead(status); res.end(); return; }
+      const payload = JSON.stringify(body);
+      res.writeHead(status, { "content-type": "application/json", "content-length": String(Buffer.byteLength(payload)) });
+      res.end(payload);
+    };
+    const envelope = (res: RpcResponse, status: number, rpcId: unknown, result: ConnectionRpcResult<unknown>): void => {
+      respond(res, status, serverResponseSchema.parse({ type: "server-response",
+        rpcId: typeof rpcId === "string" ? rpcId : INVALID_REQUEST_RPC_ID, result }));
+    };
+    scope.effect(() => scope.webServer.register({
+      kind: "prefix",
+      path: CHANNEL,
+      handler: async (req: RpcRequest, res: RpcResponse) => {
+        const connection: HostConnectionHandle = scope.connection;
+        const rejection = connection.requestRejection(req);
+        if (rejection !== undefined) { respond(res, rejection, rejection === 401 ? "unauthorized" : "forbidden"); return; }
+        const endpoint = endpointOf(new URL(req.url ?? "/", "http://dsh.internal").pathname);
+        if (req.method !== "POST" || endpoint === undefined) { respond(res, 404); return; }
+        if (headerOf(req, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") { respond(res, 415); return; }
+        const declaredLength = headerOf(req, "content-length");
+        if (declaredLength !== undefined && Number(declaredLength) > MAX_REQUEST_BODY_BYTES) { respond(res, 413); return; }
+        const chunks: Buffer[] = [];
+        let received = 0;
+        for await (const chunk of req) {
+          received += (chunk as Buffer).byteLength;
+          if (received > MAX_REQUEST_BODY_BYTES) { respond(res, 413); return; }
+          chunks.push(chunk as Buffer);
+        }
+        let body: unknown;
+        try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+        catch { respond(res, 400, "body is not JSON"); return; }
+        const parsed = clientRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          envelope(res, 400, (body as { rpcId?: unknown } | null)?.rpcId, { ok: false,
+            error: { code: "workflow/rejected", message: "Invalid workflow request envelope", details: {} } });
+          return;
+        }
+        const message = parsed.data;
+        if (message.method !== endpoint) {
+          envelope(res, 200, message.rpcId, { ok: false,
+            error: { code: "workflow/rejected", message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`, details: {} } });
+          return;
+        }
+        envelope(res, 200, message.rpcId, await dispatch(endpoint, message.payload, req.signal ?? new AbortController().signal));
+      },
+    }), `dsh-workflow-kit: ${CHANNEL} rpc channel`);
   });
 }
