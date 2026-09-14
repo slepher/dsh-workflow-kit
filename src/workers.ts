@@ -9,7 +9,7 @@ import * as subagentInternal from "@deepseek-ai/dsh-subagent/internal";
 import type { NativeExecution, NativeExecutionReport } from "dsh-codex-app-provider";
 import type { WorkflowStore } from "./store.js";
 import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
-import type { Boundary, ThreadHandoffService } from "./types.js";
+import type { Boundary, ChildAgentOptions, ThreadHandoffService } from "./types.js";
 import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
 import { bindCodingStrategy, snapshotProfile, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
 import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
@@ -659,12 +659,16 @@ export class WorkflowWorkers {
     const { signal } = this.context();
     let messageId: string;
     if (initial) {
+      // `execution` is this plugin's own creation field: `ChildAgentOptions`
+      // declares it so the plugin builds against a core whose `AgentOptions`
+      // predates it, while child resolution still preserves it verbatim.
+      const agentOptions: ChildAgentOptions = {
+        provider: record.execution.provider, model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
+        execution: { developerInstructions: record.execution.developerInstructions,
+          boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
+      };
       const created = await this.ctx.subagents.startContinuable({ provider: "spawn", label: record.name, childId: SessionId(id), signal,
-        request: { parent, prompt: [{ type: "text", text }], agentOptions: {
-          provider: record.execution.provider, model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
-          execution: { developerInstructions: record.execution.developerInstructions,
-            boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
-        } } });
+        request: { parent, prompt: [{ type: "text", text }], agentOptions } });
       messageId = created.messageId;
     } else {
       messageId = await queueHostSubagentPrompt(this.ctx.subagents, parent, SessionId(id), [{ type: "text", text }], { kind: "user" }, signal);

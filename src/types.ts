@@ -1,3 +1,5 @@
+import type { AgentOptions } from "@deepseek-ai/dsh-agent";
+
 export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface Boundary {
@@ -21,6 +23,23 @@ export interface Role {
 }
 
 export interface ResolvedRole extends Role { developerInstructions: string }
+
+/**
+ * The native execution inputs one managed child's creation options carry.
+ *
+ * Declared structurally on purpose: the installed `@deepseek-ai/dsh-agent`
+ * declares no `execution` field on `AgentOptions`, and this plugin is that
+ * field's producer (the Codex provider is its only consumer). Child resolution
+ * keeps the requested object verbatim, so the value reaches the provider even
+ * though the core type does not name it.
+ */
+export interface ChildExecutionInputs {
+  developerInstructions?: string;
+  boundary?: { cwd: string; writableRoots: readonly string[]; network: "disabled" | "loopback" };
+}
+
+/** Child creation options plus the execution field the core preserves by spread. */
+export type ChildAgentOptions = AgentOptions & { execution?: ChildExecutionInputs };
 
 /**
  * Trusted-Host thread handover, as the Codex provider publishes it on
