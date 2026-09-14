@@ -57,8 +57,11 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
     const previous = nativeFacts.get(id), number = (previous?.number ?? 0) + 1;
     const handoff = handoffs.get(id);
     // A successor's first request must carry exactly the execution the recorded
-    // handover bound, the same invariant the real provider enforces.
-    if (handoff !== undefined && previous === undefined && handoff.developerInstructions !== options.execution?.developerInstructions) {
+    // handover bound, the same invariant the real provider enforces. Role
+    // instructions travel as prompt text, so the boundary is what the handover
+    // and the child creation have to agree on.
+    if (handoff !== undefined && previous === undefined
+      && JSON.stringify(handoff.boundary) !== JSON.stringify(options.execution?.boundary)) {
       throw new Error("successor execution must match the recorded handover");
     }
     const childCwd = options?.execution?.boundary.cwd ?? previous?.cwd ?? cwd;
@@ -95,5 +98,7 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
     row.reports.push({ threadId: row.threadId, turnId: row.turnId, status: "completed", result: text, createdAt: Date.now() });
     agents.delete(id); sessions.delete(id);
   };
-  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish, handoffs, handoffCalls };
+  /** The model-visible text one recorded dispatch delivered. */
+  const promptText = call => (call.prompt ?? []).map(block => block.text ?? "").join("\n");
+  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish, handoffs, handoffCalls, promptText };
 }

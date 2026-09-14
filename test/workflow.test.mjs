@@ -27,7 +27,7 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   });
   await action({ action: "adopt", generation }); await action({ action: "dispatch", task: "T001" });
   let summary = await action({ action: "status" }), attempt = summary.tasks[0];
-  assert.match(f.calls[0].prompt[0].text, /- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: [0-9a-f]+\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>/);
+  assert.match(f.promptText(f.calls[0]), /- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: [0-9a-f]+\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>/);
   await assert.rejects(f.run(() => workers.append("parent", attempt.workerId, "unauthorized")), /requires codex_workflow/);
   await finish(attempt.workerId, attempt.turnId, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`);
   await action({ action: "record-result", task: "T001" });
@@ -47,7 +47,7 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   await action({ action: "integrate", task: "T001" });
   summary = await action({ action: "release", task: "T001", processesStopped: true });
   assert.equal(summary.tasks[0].state, "released");
-  assert.equal(f.calls.find(call => call.options?.execution.developerInstructions === "Execute evidence_runner").options.model, ROLES.find(role => role.name === "evidence_runner").model);
+  assert.equal(f.calls.find(call => f.promptText(call).includes("Execute evidence_runner")).options.model, ROLES.find(role => role.name === "evidence_runner").model);
   await action({ action: "dispatch", task: "T002" }); summary = await action({ action: "status" }); attempt = summary.tasks.find(item => item.task === "T002");
   const lane = summary.lanes.find(item => item.name === attempt.lane); writeFileSync(join(lane.path, "a.txt"), "changed\n"); git(lane.path, "add", "a.txt"); git(lane.path, "commit", "-m", "change"); const candidate = git(lane.path, "rev-parse", "HEAD");
   await finish(attempt.workerId, attempt.turnId, `- Task: T002\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${candidate}\n- Outcome: complete\n`);

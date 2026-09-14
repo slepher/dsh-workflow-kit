@@ -54,7 +54,7 @@ test("the default coding strategy dispatches the unified role on the def configu
   await dispatch();
   const created = f.calls.find(call => call.options !== undefined);
   assert.equal(created.options.model, "def-model", "adaptive starts on def");
-  assert.match(created.prompt[0].text, /Bound execution strategy: adaptive \(requested adaptive\); phase main; model configuration tier def/);
+  assert.match(f.promptText(created), /Bound execution strategy: adaptive \(requested adaptive\); phase main; model configuration tier def/);
   const attempt = f.store.read().runs[0].attempts[0];
   assert.equal(attempt.strategy, "adaptive");
   assert.equal(attempt.effectiveStrategy, "adaptive");
@@ -69,7 +69,7 @@ test("a Session strategy override changes the configuration a dispatch binds", a
   await dispatch();
   const created = f.calls.find(call => call.options !== undefined);
   assert.equal(created.options.model, "sup-model", "expert runs the sup configuration");
-  assert.match(created.prompt[0].text, /Bound execution strategy: independent \(requested expert\)/);
+  assert.match(f.promptText(created), /Bound execution strategy: independent \(requested expert\)/);
   const worker = (await f.run(() => f.workers.list("parent")))[0];
   assert.deepEqual(worker.strategy, { requested: "expert", effective: "independent", tier: "sup", phase: "main" });
 });
@@ -88,7 +88,7 @@ test("a same-model configuration fixes independent def execution whatever the pr
   const created = f.calls.find(call => call.options !== undefined);
   assert.equal(created.options.model, "same-model");
   assert.equal(created.options.reasoningEffort, "medium", "the derived execution uses def's effort");
-  assert.match(created.prompt[0].text, /Bound execution strategy: independent \(requested bootstrap\); phase main; model configuration tier def/);
+  assert.match(f.promptText(created), /Bound execution strategy: independent \(requested bootstrap\); phase main; model configuration tier def/);
   const worker = (await f.run(() => f.workers.list("parent")))[0];
   assert.equal(worker.strategy.tier, "def", "no handoff tier is bound");
   assert.equal(f.store.strategyPreference("parent"), "bootstrap", "the preference is retained for a later Profile switch");
@@ -125,7 +125,7 @@ async function dispatchedOn(f, workflow, task) {
   const before = f.calls.filter(call => call.options !== undefined).length;
   await f.run(() => workflow.execute("parent", { action: "dispatch", task }));
   const created = f.calls.filter(call => call.options !== undefined)[before];
-  return { model: created.options.model, effort: created.options.reasoningEffort, prompt: created.prompt[0].text };
+  return { model: created.options.model, effort: created.options.reasoningEffort, prompt: f.promptText(created) };
 }
 
 test("a legacy coding contract is refused until it is revised to the unified role", async t => {
@@ -176,7 +176,7 @@ test("an integration binds the integrate strategy for its review, not the coding
     assert.equal(stored.profile, "a", "the integration records the Profile it was prepared with");
     const created = f.calls.find(call => call.id === integration.reviewer);
     assert.equal(created.options.model, expected, `integrate ${integrate} selects its own configuration`);
-    assert.equal(created.options.execution.developerInstructions, "Reviewer instructions [integrate-execution]",
+    assert.match(f.promptText(created), /Reviewer instructions \[integrate-execution\]/,
       "the reviewer keeps its own responsibility and gains only the integrate phase text");
   }
 });

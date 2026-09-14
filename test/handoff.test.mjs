@@ -87,7 +87,7 @@ test("a bootstrap opening report continues the task on a def successor child", a
   const created = f.calls.find(call => call.id === handoff.toWorker);
   assert.equal(created.options.model, "def-model");
   assert.equal(created.options.reasoningEffort, "medium");
-  assert.match(created.options.execution.developerInstructions, /coding_worker \[coding-bootstrap-continuation,coding-adaptive\]/);
+  assert.match(f.promptText(created), /coding_worker \[coding-bootstrap-continuation,coding-adaptive\]/, "the successor's continuation instructions open its own conversation");
   assert.deepEqual(created.options.execution.boundary, f.facts.get(attempt.workerId).boundary ?? created.options.execution.boundary);
   assert.equal(f.facts.get(handoff.toWorker).threadId, f.facts.get(attempt.workerId).threadId, "the Codex thread is unchanged");
   assert.notEqual(f.facts.get(handoff.toWorker).nativeSessionId, f.facts.get(attempt.workerId).nativeSessionId, "the DSH child identity changed");
@@ -276,11 +276,11 @@ test("an adaptive worker's consultation starts one read-only expert on the sup c
   assert.equal(created.options.execution.boundary.cwd, f.facts.get(attempt.workerId).cwd);
   assert.equal(created.options.execution.boundary.writableRoots.some(root => root === created.options.execution.boundary.cwd), false,
     "the expert cannot write the requesting workspace");
-  assert.equal(created.options.execution.developerInstructions, "Execute coding_worker [coding-consultation]",
+  assert.match(f.promptText(created), /Execute coding_worker \[coding-consultation\]/,
     "the expert is bound only to the bounded consultation text");
-  assert.doesNotMatch(created.options.execution.developerInstructions, /Adaptive coding execution/);
-  assert.match(created.prompt[0].text, /Question: which option keeps the wire format stable\?/);
-  assert.match(created.prompt[0].text, /Expected conclusion: the option to implement and its compatibility rule\./);
+  assert.doesNotMatch(f.promptText(created), /Adaptive coding execution/);
+  assert.match(f.promptText(created), /Question: which option keeps the wire format stable\?/);
+  assert.match(f.promptText(created), /Expected conclusion: the option to implement and its compatibility rule\./);
 
   // The same question is never dispatched to a second expert.
   summary = await action({ action: "status" });

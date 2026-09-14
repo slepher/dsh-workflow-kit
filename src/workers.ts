@@ -182,6 +182,22 @@ export interface ControlOutcome {
 }
 
 /** Workflow owns authorization and acceptance; native children and Codex own execution facts. */
+/**
+ * The opening prompt of one managed child.
+ *
+ * The workflow's role and phase instructions are its own content, so they open
+ * the child's own conversation as prompt text. An empty composition (a role
+ * with no prompt skills) contributes nothing rather than an empty block.
+ * @param instructions - the role instructions captured for this dispatch.
+ * @param text - the task text this dispatch delivers.
+ * @returns the model-visible prompt blocks, oldest first.
+ */
+function openingPrompt(instructions: string, text: string): { type: "text"; text: string }[] {
+  return instructions.trim() === ""
+    ? [{ type: "text", text }]
+    : [{ type: "text", text: instructions }, { type: "text", text }];
+}
+
 export class WorkflowWorkers {
   private readonly request = new AsyncLocalStorage<{ parent: Agent; session: Agent["session"]; signal: AbortSignal }>();
 
@@ -481,7 +497,6 @@ export class WorkflowWorkers {
       try {
         bound = await service.handoff({ requestId: handoff.requestId, fromSessionId: fromWorker, toSessionId: handoff.toWorker,
           model: target.model, reasoningEffort: target.reasoningEffort,
-          developerInstructions: successor.execution.developerInstructions,
           boundary: { cwd: current.boundary.cwd, writableRoots: current.boundary.writableRoots, network: current.boundary.network } });
       } catch (error) {
         return { accepted: false, signal, reason: `the Codex thread handover did not bind: ${String(error)}` };
@@ -659,16 +674,18 @@ export class WorkflowWorkers {
     const { signal } = this.context();
     let messageId: string;
     if (initial) {
-      // `execution` is this plugin's own creation field: `ChildAgentOptions`
-      // declares it so the plugin builds against a core whose `AgentOptions`
-      // predates it, while child resolution still preserves it verbatim.
+      // The role's instructions are this plugin's own content, so they are
+      // injected as the child's opening prompt: no core has to carry a plugin
+      // field for them, and the provider needs to know nothing about workflow
+      // roles. What stays in `execution` is the declared boundary, which is a
+      // permission constraint the Codex provider has to translate rather than
+      // prompt text.
       const agentOptions: ChildAgentOptions = {
         provider: record.execution.provider, model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
-        execution: { developerInstructions: record.execution.developerInstructions,
-          boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
+        execution: { boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
       };
       const created = await this.ctx.subagents.startContinuable({ provider: "spawn", label: record.name, childId: SessionId(id), signal,
-        request: { parent, prompt: [{ type: "text", text }], agentOptions } });
+        request: { parent, prompt: openingPrompt(record.execution.developerInstructions, text), agentOptions } });
       messageId = created.messageId;
     } else {
       messageId = await queueHostSubagentPrompt(this.ctx.subagents, parent, SessionId(id), [{ type: "text", text }], { kind: "user" }, signal);

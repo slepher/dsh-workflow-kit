@@ -12,7 +12,7 @@ test("native creation snapshots profiles; continuation preserves A after switchi
     await f.workers.append("parent", "child-b", "task B", true, "b-first");
     assert.equal(f.calls[0].options.model, "model-a");
     assert.equal(f.calls[1].options.model, "model-b");
-    assert.equal(f.calls[0].options.execution.developerInstructions, "Reviewer instructions");
+    assert.match(f.promptText(f.calls[0]), /Reviewer instructions/, "the role instructions open the child's own conversation");
     f.finish("child-a");
     await f.workers.append("parent", "child-a", "continue A", true, "a-next");
     assert.equal(f.facts.get("child-a").model, "model-a");
