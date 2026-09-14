@@ -34,7 +34,7 @@ const devFixture = t => {
   writeFileSync(join(cwd, "cordis.patch.yml"), readFileSync(new URL("../cordis.patch.yml", import.meta.url)));
   symlinkSync(cwd, join(profileDir, "node_modules", "dsh-workflow-kit"));
   writeFileSync(join(profileDir, "package.json"), JSON.stringify({ dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dsh-codex-app-provider", "dsh-workflow-kit"] } } }));
-  writeFileSync(join(profileDir, "cordis.patch.yml"), `- id: dsh-codex-app-provider\n  config:\n    stateDir: ${stateDir}\n- id: hmr\n  disabled: false\n  config:\n    base: ${root}\n    root:\n      - workflow/lib\n`);
+  writeFileSync(join(profileDir, "cordis.patch.yml"), `- id: dsh-codex-app-provider\n  config:\n    stateDir: ${stateDir}\n- id: hmr\n  disabled: false\n  config:\n    base: ${root}\n    root:\n      - workflow/lib\n      - codex/lib\n`);
   writeFileSync(join(bin, "npm"), `#!/bin/sh\necho "$PWD $*" >> ${join(root, "builds")}\ncount=$(wc -l < ${join(root, "builds")})\nif [ -f ${join(root,"block-second")} ] && [ "$count" = 2 ]; then touch ${join(root,"second-build-started")}; trap 'echo done > ${join(root,"second-build-done")}; exit 0' INT; while true; do sleep 1; done; fi\nexit 0\n`);
   writeFileSync(join(bin, "dsh"), `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(join(root, "hosts"))}, String(process.pid) + "\\n"); appendFileSync(${JSON.stringify(join(root, "host-argv"))}, JSON.stringify(process.argv.slice(2)) + "\\n");\nsetInterval(() => {}, 1000);\n`);
   chmodSync(join(bin, "npm"), 0o755); chmodSync(join(bin, "dsh"), 0o755);

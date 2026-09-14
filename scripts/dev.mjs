@@ -16,7 +16,8 @@ const expectedBundles = ["dsh-codex-app-provider", "dsh-workflow-kit"];
 const bundles = JSON.parse(readFileSync(profileManifest, "utf8"))?.dsh?.profile?.bundles;
 if (bundles?.filter(bundle => expectedBundles.includes(bundle)).join("\0") !== expectedBundles.join("\0")) throw new Error(`DSH profile ${profile} must load app provider, then workflow exactly once.`);
 
-const expectedRoots = [join(root, "lib")];
+// Both checkouts publish into their own `lib`; the profile and this overlay must agree on exactly these roots.
+const expectedRoots = [join(root, "lib"), join(codex, "lib")];
 const effective = host.resolveDevHost({ profile, patches, dshHome, expectedRoots, providerCheckout: codex });
 let owner = host.inspectOwner(effective.stateDir, profile);
 const temp = mkdtempSync(join(tmpdir(), "dsh-workflow-kit-dev-")), overlay = join(temp, "hmr.patch.yml");

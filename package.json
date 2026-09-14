@@ -28,7 +28,8 @@
     "prepare:local": "node scripts/prepare-local.mjs",
     "test": "node --test test/*.test.mjs",
     "publish": "node scripts/publish.mjs",
-    "publish:watch": "node scripts/publish.mjs --watch"
+    "publish:watch": "node scripts/publish.mjs --watch",
+    "dev:host": "node scripts/start-dev-host.mjs"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
