@@ -445,3 +445,39 @@ test("turns on a successor adapter are read from the DSH session, so completion 
   assert.equal(failed.reports.at(-1).status, "failed");
   assert.ok(attempt.workerId);
 });
+
+test("a successor whose session is no longer live still confirms its handover", async t => {
+  const rows = new Map();
+  const { repo, generation, base } = project(t);
+  const f = fixture(t, { cwd: repo, roles: CROSS_PROVIDER, facts: () => ["[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)"],
+    sessionEvents: id => rows.get(id) ?? [] });
+  f.store.selectStrategy("parent", "bootstrap");
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+  await action({ action: "adopt", generation });
+  await action({ action: "dispatch", task: "T001" });
+  const opening = (await action({ action: "status" })).tasks[0];
+  await f.run(async () => { f.finish(opening.workerId, HANDOFF_REPORT); });
+  const handoff = (await action({ action: "status" })).tasks.find(item => item.task === "T001").handoff;
+  assert.equal(handoff.status, "started");
+
+  // The successor ran its turn on the other adapter; its agent and its live
+  // session are gone, so only the persisted log records what it did.
+  const report = `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`;
+  rows.set(handoff.toWorker, [
+    { type: "turn/start", seq: 1, time: 1, data: { turn: 1 } },
+    { type: "assistant/message", seq: 2, time: 2, data: { turn: 1, step: 1, message: { role: "assistant", id: "m1", content: [{ type: "text", text: report }] } } },
+    { type: "turn/end", seq: 3, time: 3, data: { turn: 1, reason: { kind: "completed" } } },
+  ]);
+  f.ctx.agents.delete(handoff.toWorker);
+  f.ctx.sessions.delete(handoff.toWorker);
+
+  const worker = await f.run(() => f.workers.get("parent", handoff.toWorker));
+  assert.equal(worker.state, "idle", "a finished successor never reads as unknown");
+  assert.equal(worker.turnId, "dsh-1", "the persisted log answers once the live session is gone");
+  assert.equal(worker.reports.length, 1);
+
+  const confirmed = (await action({ action: "status" })).tasks.find(item => item.task === "T001");
+  assert.equal(confirmed.handoff.status, "confirmed", "the successor's own turn confirms the handover");
+  assert.equal(confirmed.activeWorker, handoff.toWorker, "the confirmed successor owns the task");
+});

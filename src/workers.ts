@@ -198,6 +198,35 @@ function openingPrompt(instructions: string, text: string): { type: "text"; text
     : [{ type: "text", text: instructions }, { type: "text", text }];
 }
 
+/**
+ * Fold one session's events into its closed turns.
+ * @param events - the session log, oldest first.
+ * @param sessionId - the session the log belongs to, used as the turn's thread identity.
+ * @returns one entry per turn that ended, oldest first.
+ */
+function turnsOf(events: readonly unknown[], sessionId: string): SessionTurn[] {
+  const turns: SessionTurn[] = [];
+  let turn: number | undefined;
+  let text = "";
+  let interrupted = false;
+  for (const raw of events as readonly { type: string; time: number; data: Record<string, unknown> }[]) {
+    if (raw.type === "turn/start") { turn = raw.data.turn as number; text = ""; interrupted = false; continue }
+    if (turn === undefined) continue;
+    if (raw.type === "assistant/message" && raw.data.turn === turn) {
+      const message = raw.data.message as { content?: readonly { type: string; text?: string }[] } | undefined;
+      text = (message?.content ?? []).flatMap(block => block.type === "text" ? [block.text ?? ""] : []).join("\n");
+      if (raw.data.interrupted === true) interrupted = true;
+      continue;
+    }
+    if (raw.type !== "turn/end" || raw.data.turn !== turn) continue;
+    const reason = raw.data.reason as { kind?: string } | undefined;
+    turns.push({ turnId: `dsh-${turn}`, status: reason?.kind === "error" ? "failed" : interrupted || reason?.kind === "aborted" ? "interrupted" : "completed",
+      result: text, threadId: sessionId, createdAt: raw.time });
+    turn = undefined;
+  }
+  return turns;
+}
+
 export class WorkflowWorkers {
   private readonly request = new AsyncLocalStorage<{ parent: Agent; session: Agent["session"]; signal: AbortSignal }>();
 
@@ -350,7 +379,7 @@ export class WorkflowWorkers {
     const native = bound.provider === NATIVE_EXECUTION_PROVIDER
       ? await this.ctx.codexExecution.read(id) as NativeFacts | undefined
       : undefined;
-    const sessionTurns = bound.provider === NATIVE_EXECUTION_PROVIDER ? undefined : this.sessionTurns(id);
+    const sessionTurns = bound.provider === NATIVE_EXECUTION_PROVIDER ? undefined : await this.sessionTurns(id);
     const switching = native?.pending !== undefined;
     let state: WorkerProjection["state"];
     if (sessionTurns !== undefined) {
@@ -388,31 +417,34 @@ export class WorkflowWorkers {
    * @param id - the child session id.
    * @returns one entry per closed turn, oldest first; `undefined` when the session or its log is unavailable.
    */
-  private sessionTurns(id: string): SessionTurn[] | undefined {
+  /**
+   * Read one child's completed turns from the DSH session it owns.
+   *
+   * Used once an execution continues under an adapter that has no native reader
+   * of its own: turn identity, terminal status and the model-visible final text
+   * all come from the session log, so acceptance keeps the same meaning. The
+   * live registry is preferred, and the persisted log answers once the child's
+   * agent is gone — reading only the live registry would leave a finished
+   * successor looking like an execution with no turn at all, so a handover could
+   * never be confirmed after its turn ended.
+   * @param id - the child session id.
+   * @returns one entry per closed turn, oldest first; `undefined` when the session or its log is unavailable.
+   */
+  private async sessionTurns(id: string): Promise<SessionTurn[] | undefined> {
     let session
     try { session = this.ctx.sessions.get(SessionId(id)) }
-    catch { return undefined }
-    const events = session?.snapshotEvents?.()
-    if (events === undefined) return undefined;
-    const turns: SessionTurn[] = [];
-    let turn: number | undefined;
-    let text = "";
-    let interrupted = false;
-    for (const event of events) {
-      if (event.type === "turn/start") { turn = event.data.turn; text = ""; interrupted = false; continue }
-      if (turn === undefined) continue;
-      if (event.type === "assistant/message" && event.data.turn === turn) {
-        text = event.data.message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
-        if (event.data.interrupted === true) interrupted = true;
-        continue;
-      }
-      if (event.type !== "turn/end" || event.data.turn !== turn) continue;
-      const reason = event.data.reason;
-      turns.push({ turnId: `dsh-${turn}`, status: reason.kind === "error" ? "failed" : interrupted || reason.kind === "aborted" ? "interrupted" : "completed",
-        result: text, threadId: id, createdAt: event.time });
-      turn = undefined;
-    }
-    return turns;
+    catch { session = undefined }
+    const live = session?.snapshotEvents?.();
+    if (live !== undefined) return turnsOf(live, id);
+    const persistence = (this.ctx as unknown as { get?: (name: string) => unknown }).get?.("sessionPersistence") as
+      | { open?(session: unknown, mode: string): Promise<{ read(): Promise<{ events?: readonly unknown[] }>; close(): Promise<void> }> }
+      | undefined;
+    if (persistence?.open === undefined) return undefined;
+    try {
+      const handle = await persistence.open(SessionId(id), "read");
+      try { return turnsOf((await handle.read()).events ?? [], id); }
+      finally { await handle.close(); }
+    } catch { return undefined; }
   }
 
   /** The model configuration this record's current phase runs on. */

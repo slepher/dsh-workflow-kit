@@ -78,7 +78,13 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
   };
   const execution = { async read(id) { return structuredClone(nativeFacts.get(id)); },
     ...(facts === undefined ? {} : { facts: async id => facts(String(id)) }) };
-  const ctx = { agents, sessions, get: name => name === "codexExecution" ? execution : name === "codexHandoff" ? handoffService : undefined,
+  /** The persisted session log seam: the live registry may no longer hold the child. */
+  const persistence = { async open(id, mode) {
+    assert.equal(mode, "read");
+    return { async read() { return { events: sessionEvents?.(String(id)) ?? [] }; }, async close() {} };
+  } };
+  const ctx = { agents, sessions, get: name => name === "codexExecution" ? execution : name === "codexHandoff" ? handoffService
+      : name === "sessionPersistence" ? persistence : undefined,
     codexExecution: execution, ...(handoffService === undefined ? {} : { codexHandoff: handoffService }), subagents: {
     async startContinuable(spec) { calls.push(structuredClone({ id: spec.childId, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt) }; },
     async [Symbol.for("dsh.subagent.deliverPrompt")](_parent, id, content, _source, _signal, delivery) {
@@ -100,5 +106,5 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
   };
   /** The model-visible text one recorded dispatch delivered. */
   const promptText = call => (call.prompt ?? []).map(block => block.text ?? "").join("\n");
-  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish, handoffs, handoffCalls, promptText };
+  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish, handoffs, handoffCalls, promptText, persistence };
 }
