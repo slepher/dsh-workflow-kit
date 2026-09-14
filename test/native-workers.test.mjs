@@ -22,6 +22,34 @@ test("native creation snapshots profiles; continuation preserves A after switchi
   });
 });
 
+test("a lane worker reconciles on its execution cwd, and a drifted native cwd is unknown", async t => {
+  const f = fixture(t);
+  const host = f.parent.session.header.cwd;
+  const lane = `${host}/lane`;
+  await f.run(async () => {
+    const snapshot = f.workers.captureRole("reviewer");
+    // The task's assigned workspace is the lane. The workflow records the
+    // execution cwd; the DSH Session's host workspace is the parent's and never
+    // enters this record, so a lane worker reconciles instead of turning unknown.
+    await f.workers.create(f.parent.id, { id: "lane-child", name: "lane child", cwd: lane, ...snapshot, managed: true,
+      boundary: { cwd: lane, writableRoots: [lane], network: "disabled", ports: {} } });
+    await f.workers.append(f.parent.id, "lane-child", "task", true);
+    assert.equal(f.facts.get("lane-child").cwd, lane, "the native execution runs in the lane");
+    assert.equal(f.calls[0].options.execution.boundary.cwd, lane, "the declared boundary travels verbatim");
+    f.finish("lane-child");
+    const settled = await f.workers.get(f.parent.id, "lane-child");
+    assert.equal(settled.state, "idle", "a lane worker is reconciled, never unknown");
+    assert.equal(settled.cwd, lane, "the projection reports the execution cwd");
+    assert.equal(settled.reports.length, 1);
+    assert.equal(settled.reports[0].result, "deliverable");
+
+    // A native thread that reports the host workspace instead of the lane is a
+    // real inconsistency and must stay observable.
+    f.facts.get("lane-child").cwd = host;
+    assert.equal((await f.workers.get(f.parent.id, "lane-child")).state, "unknown");
+  });
+});
+
 test("lost native acceptance response is observed without resending; unknown cannot be closed or accepted", async t => {
   const f = fixture(t);
   await f.run(async () => {
