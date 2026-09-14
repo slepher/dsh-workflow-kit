@@ -99,21 +99,24 @@ export function parseControlSignal(text: string): ControlSignal | undefined {
 /**
  * Build the continuation prompt the Host binds with a handoff.
  *
- * The prompt states the phase facts the worker cannot infer: the opening
- * instruction is fulfilled, the original goal and contract still apply, and
- * the bound configuration changed without changing the assignment. When the
- * handoff also changes provider adapter, the sourced executed facts of the
- * previous adapter are carried here, because the native thread does not
- * survive that boundary.
+ * The prompt addresses the successor child that now owns the assignment. It
+ * states the phase facts that child cannot infer: the opening instruction is
+ * fulfilled, the original goal and contract still apply, and the bound
+ * configuration changed without changing the task. A same-provider handoff
+ * keeps the original Codex thread; a cross-provider handoff does not carry that
+ * thread, so the previous adapter's sourced executed facts are imported here as
+ * the successor's history.
  * @param signal - the parsed handoff report.
  * @param facts - sourced executed facts to import; omit when the native thread continues.
- * @returns the continuation prompt for the same worker's next turn.
+ * @returns the continuation prompt for the successor child's first turn.
  */
 export function handoffPrompt(signal: HandoffSignal, facts?: readonly string[]): string {
   return [
-    "Continue as the same coding_worker; the opening phase handed the assignment to the bound def configuration.",
+    "You are the successor continuation of this coding assignment; the opening phase handed it to the bound def configuration.",
     "The original goal, frozen contract, ownership, permissions and acceptance still apply; the opening downgrade instruction is fulfilled and does not apply again.",
-    "Use the existing thread context and the handoff facts below to complete the remaining implementation, testing and in-scope repairs.",
+    facts === undefined
+      ? "Use the Codex thread the Host kept for this successor, together with the handoff facts below, to complete the remaining implementation, testing and in-scope repairs."
+      : "This successor does not share the previous provider's native thread; the executed facts below are the imported history and the handoff summary states what remains. Complete the remaining implementation, testing and in-scope repairs from them.",
     "Read additional evidence only as needed; do not rebuild the task or repeat an entire validation pass because the model changed.",
     "",
     "Handoff summary:",

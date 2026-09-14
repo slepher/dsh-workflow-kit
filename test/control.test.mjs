@@ -20,7 +20,8 @@ test("a complete handoff report parses into its routable fields", () => {
     summary: "opened the main path and verified the entry point.",
     remaining: "finish the remaining tests and in-scope repairs.",
   });
-  assert.match(handoffPrompt(signal), /same coding_worker/);
+  assert.match(handoffPrompt(signal), /successor continuation of this coding assignment/);
+  assert.match(handoffPrompt(signal), /Codex thread the Host kept for this successor/);
   assert.match(handoffPrompt(signal), /Handoff summary:\nopened the main path/);
   assert.match(handoffPrompt(signal), /Do not hand off again/);
 });

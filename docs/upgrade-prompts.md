@@ -10,8 +10,9 @@
 改为“同一任务的后继 child”：Codex 内保留原 thread，跨 provider 交接指定上下文。
 这些文本改动应与 provider 绑定及 workflow 执行者切换一起接入，不能只改文案。
 
-- 后继首次创建即使用 def 配置，不依赖 `applyExecutionRoute` 或
-  `continueHostSubagentPrompt` 改变活跃 Agent；旧方案源码记录不要求本轮自动删除。
+- 后继机制：Host 先预留 `toWorker` 与 `requestId`，经 provider 的 `ctx.codexHandoff`
+  绑定原 Codex thread，再用 `startContinuable` 创建兄弟 child，并从原生事实确认交接完成；
+  旧 route-update core 改动不再被本插件引用，其源码记录不要求本轮自动删除。
 - `coding-bootstrap-opening`：由 Host 创建后继并交接原 thread，worker 不自行创建 child。
 - `coding-bootstrap-continuation`：说明后继身份、当前阶段及真实上下文来源；Codex 内
   指向恢复的原 thread，跨 provider 指向输入的历史和事实，不承诺完整原生历史。
@@ -62,13 +63,15 @@ coding 派发与 integration 创建各自记录有效策略及 sup／def 快照�
 接受 `coding_worker`（并保留旧键读取兼容），Host 在派发时明确拒绝旧 coding 角色。
 提示表已按既有构建流程生成。
 
-此前同 Session 方案的源码接入记录（接续部分现需按后继设计调整）：控制报告（`handoff`／`consult`）解析与受控配置续接
-（`applyExecutionRoute` ＋ `continueHostSubagentPrompt` ＋ Host 侧 `settleControl`／
-`settleConsults`）、跨 provider 接续与 sourced 执行事实导入（provider 的只读
-`facts` 投影 ＋ 切换后按 DSH session 读取完成与报告）、有界咨询闭环、以及只读用量
-投影与按 turn 去重的汇总。四项能力各自在有包集支持时才启用：安装的 DSH／provider
-包尚未重建时，Host 通过 `routeSupport` 与 `control.reason` 报告具体不可用原因，
-不静默按旧配置执行。
+接续部分现按后继设计接入：控制报告（`handoff`／`consult`）解析与受控交接（Host 侧
+`settleControl`／`settleConsults` 预留 `toWorker` 与 `requestId`、经 provider 的
+`ctx.codexHandoff` 绑定原 thread、用 `startContinuable` 创建兄弟 child，并从原生事实
+确认交接完成）、跨 provider 接续与 sourced 执行事实导入（provider 的只读 `facts` 投影 ＋
+交接后按后继自身的 DSH session log 读取完成与报告）、有界咨询闭环、以及只读用量投影
+与按 turn 去重的汇总。交接能力按路线分别要求 `threadHandoff` 或 `factImport`：安装的
+DSH／provider 包尚未重建时，Host 通过 `handoffSupport` 与 `control.reason` 报告具体
+不可用原因，不静默按旧配置执行。旧的活体 route-update core 改动不再被本插件引用。
+本轮不要求删除那些源码记录，也不把它们作为新方案的运行先决条件。
 
 新方案的真实模型验证（Codex 内后继复用 thread、Codex → DeepSeek 后继交接）
 须在对应 provider／workflow 包接入后，按 upgrade.md 第 9 节执行；

@@ -43,7 +43,7 @@ export interface StrategyBinding {
   sameModel: boolean;
   /** Profile configuration tier this phase runs on. */
   tier: Tier;
-  /** Whether this execution may hand off to the other tier in the same thread. */
+  /** Whether this execution may hand off to a successor of the same task on the other tier. */
   handoff: boolean;
   /** Whether this execution may request one bounded expert consultation. */
   consult: boolean;

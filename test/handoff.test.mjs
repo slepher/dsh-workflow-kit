@@ -72,7 +72,8 @@ test("a bootstrap opening report continues the task on a def successor child", a
   assert.equal(handoff.requestId, `${attempt.workerId}:handoff:${handoff.sourceTurnId}`);
   assert.equal(handoff.sourceTurnId, attempt.turnId, "the source turn is the opening turn");
   assert.equal(handoff.messageId, `inbox-${handoff.toWorker}-1`);
-  assert.match(handoff.prompt, /Continue as the same coding_worker/);
+  assert.match(handoff.prompt, /successor continuation of this coding assignment/);
+  assert.match(handoff.prompt, /Codex thread the Host kept for this successor/);
   assert.match(handoff.prompt, /Remaining work:\nfinish the remaining tests/);
   assert.equal(task.state, "running", "the handoff does not end the assignment");
   assert.equal(task.tier, "def");
@@ -372,6 +373,7 @@ test("a cross-provider handoff starts a sibling successor with the sourced facts
   assert.notEqual(handoff.toWorker, attempt.workerId);
   assert.equal(f.handoffCalls.length, 0, "a cross-provider continuation does not share the Codex thread");
   assert.equal(handoff.threadId, undefined, "no native thread binding is recorded");
+  assert.match(handoff.prompt, /does not share the previous provider's native thread; the executed facts below are the imported history/);
   assert.match(handoff.prompt, /Executed facts imported from the previous adapter \(already performed; do not re-run them\):/);
   assert.match(handoff.prompt, /\[source: codex thread=th1 turn=t1 item=i1\] command: pnpm test \(exit 0\)/);
   assert.match(handoff.prompt, /Long native output was shortened and remains addressable/);

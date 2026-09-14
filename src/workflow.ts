@@ -106,7 +106,7 @@ function aggregateUsage(entries: readonly ReportUsage[]): UsageTotal {
 
 /** The frozen coding binding one attempt keeps for its later phases. */
 type AttemptBinding = { strategy?: CodingStrategy; effectiveStrategy?: EffectiveStrategy; tier?: Tier; phase?: CodingPhase; coding?: { def: RoleInput; sup: RoleInput }; profile?: string;
-  /** The in-thread handoff this attempt performed, if its opening phase requested one. */
+  /** The successor handoff this attempt performed, if its opening phase requested one. */
   handoff?: HandoffRecord;
   /** A control report this attempt submitted that its phase did not authorize. */
   control?: { turnId: string; signal: string; reason: string };
@@ -333,7 +333,7 @@ export class Workflow {
   /**
    * Record the token accounting every native turn of this run reported.
    *
-   * The key is the native turn, so observing the same worker again adds nothing;
+   * The key is the native turn, so re-observing an execution adds nothing;
    * a turn whose provider reported no usage stays counted as unreported rather
    * than as a zero-cost call.
    * @param run - the adopted generation.
@@ -417,9 +417,9 @@ export class Workflow {
    * A `coding_worker` on an `adaptive` phase or a bootstrap continuation may
    * request expert judgment. The Host starts one expert child on the Profile's
    * sup configuration with no write access to the requesting workspace, then
-   * returns the expert's conclusion to the same worker, which still implements
-   * and verifies the result. The expert never accepts the task, and no second
-   * expert is created for the same question.
+   * returns the expert's conclusion to the requesting execution, which still
+   * implements and verifies the result. The expert never accepts the task, and
+   * no second expert is created for the same question.
    * @param run - the adopted generation.
    */
   private async settleConsults(run: Run) {
