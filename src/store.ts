@@ -89,9 +89,20 @@ function parse(text: string): WorkflowState {
     if (record.strategy !== undefined && (typeof record.strategy.requested !== "string" || typeof record.strategy.effective !== "string"
       || typeof record.strategy.tier !== "string" || typeof record.strategy.phase !== "string")) throw new Error(`Invalid native child strategy binding: ${id}`);
     if (record.handoff !== undefined && (typeof record.handoff.requestId !== "string" || !record.handoff.requestId
+      || typeof record.handoff.fromWorker !== "string" || !record.handoff.fromWorker
       || typeof record.handoff.sourceTurnId !== "string" || !record.handoff.sourceTurnId
-      || (record.handoff.target !== "def" && record.handoff.target !== "sup")
-      || typeof record.handoff.messageId !== "string" || typeof record.handoff.at !== "number")) throw new Error(`Invalid native child handoff record: ${id}`);
+      || typeof record.handoff.toWorker !== "string" || !record.handoff.toWorker
+      || (record.handoff.targetTier !== "def" && record.handoff.targetTier !== "sup")
+      || typeof record.handoff.targetConfig?.provider !== "string" || typeof record.handoff.targetConfig.model !== "string"
+      || typeof record.handoff.targetConfig.reasoningEffort !== "string"
+      || typeof record.handoff.prompt !== "string" || !record.handoff.prompt
+      || !["reserved", "bound", "started", "confirmed"].includes(record.handoff.status)
+      || record.handoff.messageId !== undefined && typeof record.handoff.messageId !== "string"
+      || record.handoff.targetTurnId !== undefined && typeof record.handoff.targetTurnId !== "string"
+      || record.handoff.threadId !== undefined && typeof record.handoff.threadId !== "string"
+      || typeof record.handoff.at !== "number")) throw new Error(`Invalid native child handoff record: ${id}`);
+    if (record.handoffFrom !== undefined && (typeof record.handoffFrom.fromWorker !== "string" || !record.handoffFrom.fromWorker
+      || typeof record.handoffFrom.requestId !== "string" || !record.handoffFrom.requestId)) throw new Error(`Invalid native child handoff source: ${id}`);
     if (record.coding !== undefined && !["def", "sup"].every(tier => {
       const entry = record.coding?.[tier as "def" | "sup"];
       return typeof entry?.provider === "string" && typeof entry.model === "string" && typeof entry.reasoningEffort === "string";

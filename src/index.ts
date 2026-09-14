@@ -17,7 +17,7 @@ export const WORKFLOW_OWNED_STATE = [
 export { listRoles, resolveRole, ROLES, CONFIG_KEYS, CODING_WORKER, configDefault, isExecutionRole } from "./roles.js";
 export { WorkflowStore } from "./store.js";
 export { WorkflowWorkers } from "./workers.js";
-export type { BoundStrategy, Capture, ContinueWithRoute, ControlOutcome, HandoffRecord, NativeChildRecord, ReportUsage, WorkerProjection } from "./workers.js";
+export type { BoundStrategy, Capture, ControlOutcome, HandoffRecord, NativeChildRecord, ReportUsage, WorkerProjection } from "./workers.js";
 export { handoffPrompt, parseControlSignal } from "./control.js";
 export type { ConsultSignal, ControlSignal, ControlTier, HandoffSignal } from "./control.js";
 export { Workflow, type WorkflowAction } from "./workflow.js";

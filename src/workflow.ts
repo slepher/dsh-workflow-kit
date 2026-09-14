@@ -117,7 +117,7 @@ type AttemptBinding = { strategy?: CodingStrategy; effectiveStrategy?: Effective
   /** Bounded consultations this attempt asked for, newest last. */
   consults?: ConsultRecord[] }
 /** One bounded consultation's durable binding to the attempt that asked for it. */
-type ConsultRecord = { id: string; sourceTurnId: string; question: string; contractRevision: number; evidence: string;
+type ConsultRecord = { id: string; /** Execution the conclusion returns to; a handoff never moves its requester. */ worker: string; sourceTurnId: string; question: string; contractRevision: number; evidence: string;
   state: 'running' | 'answered' | 'delivered'; answerTurnId?: string }
 type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string } & AttemptBinding
 type Lane = { name: string; path: string; owner?: string }
@@ -313,6 +313,18 @@ export class Workflow {
     review.turn = w.turnId ?? undefined; this.save()
   }
   private current(parent: string) { const run=this.runs.find(r=>r.parent===parent); if (!run) throw new Error('Explicitly adopt a generation first'); return run }
+  /**
+   * The execution currently responsible for an attempt.
+   *
+   * A confirmed handover moves responsibility to the successor; until the
+   * successor's own turn is confirmed the original worker still owns the
+   * assignment, so a lost response never transfers authority by assumption.
+   * @param a - the attempt.
+   * @returns the worker id every control, result and release path must use.
+   */
+  private activeWorker(a: Attempt): string {
+    return a.handoff !== undefined && a.handoff.status === 'confirmed' ? a.handoff.toWorker : a.worker
+  }
   private attempt(run: Run, input: WorkflowAction) {
     const attempt=[...run.attempts].reverse().find(a=>a.task.id===input.task && (input.attempt===undefined || a.number===input.attempt))
     if (!attempt) throw new Error('Unknown task attempt; use status for actual identities')
@@ -328,23 +340,25 @@ export class Workflow {
    */
   private async recordUsage(run: Run) {
     for (const a of run.attempts) {
-      const ids = [a.worker, a.review?.worker, a.integration?.review?.worker, a.integration?.resolution,
+      const ids = [a.worker, a.handoff?.toWorker, a.review?.worker, a.integration?.review?.worker, a.integration?.resolution,
         ...(a.previousReviews ?? []).map(review => review.worker),
         ...(a.previousIntegrations ?? []).flatMap(integration => integration.review === undefined ? [] : [integration.review.worker])]
       for (const id of new Set(ids.filter((value): value is string => typeof value === 'string'))) {
         let worker
         try { worker = await this.workers.get(run.parent, id) }
         catch { continue }
-        // The first turn after a handoff is the confirmed boundary between the
+        // The successor's first turn is the confirmed boundary between the
         // opening and continuing phases; it is recorded from native facts and
         // reflected on the attempt so `status` reports the boundary it observed.
-        if (id === a.worker && worker.handoff !== undefined) {
-          const updated = this.workers.noteHandoffTurn(this.workers.store.read().nativeChildren![id]!, worker.turnId)
-          if (updated?.handoff !== undefined) { this.workers.store.putNativeChild(updated); a.handoff = updated.handoff; this.save() }
+        if (a.handoff !== undefined && id === a.handoff.toWorker) {
+          const confirmed = this.workers.confirmHandoff(run.parent, a.handoff, worker.turnId, worker.threadId)
+          if (confirmed !== undefined) { a.handoff = confirmed; this.save() }
         }
         for (const report of worker.reports) {
           // Every completed native turn is counted; one whose provider reported
           // no usage is recorded as such instead of disappearing from the total.
+          // The key is the execution and native turn, so a thread appearing on
+          // two records never counts the same turn twice.
           a.usage ??= {}
           a.usage[`${id}:${report.turnId}`] ??= report.usage ?? UNREPORTED_USAGE
         }
@@ -413,8 +427,9 @@ export class Workflow {
       if (['released','delivered','archived'].includes(a.state)) continue
       const active = (a.consults ?? []).find(consult => consult.state !== 'delivered')
       if (active !== undefined) { await this.collectConsult(run, a, active); continue }
+      const id = this.activeWorker(a)
       let worker
-      try { worker = await this.workers.get(run.parent, a.worker) }
+      try { worker = await this.workers.get(run.parent, id) }
       catch { continue }
       if (worker.state !== 'idle') continue
       const report = worker.reports.at(-1)
@@ -431,21 +446,21 @@ export class Workflow {
         continue
       }
       if ((a.consults ?? []).some(consult => consult.question === signal.question && consult.sourceTurnId === report.turnId)) continue
-      await this.startConsult(run, a, report.turnId, signal)
+      await this.startConsult(run, a, report.turnId, signal, id)
     }
   }
 
   /** Start one expert child for a requesting turn and record its binding. */
-  private async startConsult(run: Run, a: Attempt, sourceTurnId: string, signal: ConsultSignal) {
+  private async startConsult(run: Run, a: Attempt, sourceTurnId: string, signal: ConsultSignal, requester: string) {
     if (a.coding === undefined || a.profile === undefined || a.allocation === undefined) throw new Error('Consultation requires the attempt binding snapshot')
     const id = randomUUID()
-    const consult: ConsultRecord = { id, sourceTurnId, question: signal.question, contractRevision: a.task.revision,
+    const consult: ConsultRecord = { id, worker: requester, sourceTurnId, question: signal.question, contractRevision: a.task.revision,
       evidence: signal.evidence, state: 'running' }
     a.consults = [...(a.consults ?? []), consult]
     this.save()
     try {
       await this.workers.startConsultation(run.parent, id, {
-        workerId: a.worker, profile: a.profile, coding: a.coding, cwd: a.allocation.cwd,
+        workerId: requester, profile: a.profile, coding: a.coding, cwd: a.allocation.cwd,
         artifacts: this.scoped(run.plan.repository, relative(run.plan.repository, join(run.plan.generation, '.artifacts', `${a.task.id}-A${a.number}`, 'consult', id))),
         results: this.resultDirectory(run, a), network: a.allocation.network, startKey: `workflow:${run.id}:${a.task.id}:A${a.number}:consult`,
         prompt: consultationPrompt(signal, a),
@@ -480,28 +495,33 @@ export class Workflow {
     const stale = consult.contractRevision !== a.task.revision
     await this.capacity(run)
     const prompt = consultationReturnPrompt(consult, answer.result, stale)
-    const next = await this.workers.append(run.parent, a.worker, prompt, true, `${consult.id}:return`)
+    // The conclusion returns to the execution that asked for it; a consultation
+    // never moves the attempt's active worker.
+    const next = await this.workers.append(run.parent, consult.worker, prompt, true, `${consult.id}:return`)
     consult.state = 'delivered'
-    a.turn = next.turnId ?? undefined
-    a.state = 'running'
-    delete a.candidate
+    if (consult.worker === this.activeWorker(a)) {
+      a.turn = next.turnId ?? undefined
+      a.state = 'running'
+      delete a.candidate
+    }
     this.save()
   }
   private async settleControls(run: Run) {
     for (const a of run.attempts) {
       if (!['running','unknown','blocked'].includes(a.state)) continue
+      const id = this.activeWorker(a)
       let worker
-      try { worker = await this.workers.get(run.parent, a.worker) }
+      try { worker = await this.workers.get(run.parent, id) }
       catch { continue }
       if (worker.state !== 'idle') continue
       const report = worker.reports.at(-1)
       if (report === undefined || report.status !== 'completed') continue
       const signal = parseControlSignal(report.result)
       if (signal === undefined) continue
-      const outcome = await this.workers.settleControl(run.parent, a.worker, report.turnId)
+      const outcome = await this.workers.settleControl(run.parent, id, report.turnId)
       if (outcome.accepted && outcome.handoff !== undefined) {
         a.handoff = outcome.handoff
-        a.tier = outcome.handoff.target
+        a.tier = outcome.handoff.targetTier
         a.phase = 'continuation'
         a.turn = undefined
         delete a.control
@@ -518,8 +538,7 @@ export class Workflow {
     const accepted = new Set(run.attempts.filter(a=>!a.discarded&&['accepted','delivered','released'].includes(a.state)&&a.candidate&&a.task.revision===run.plan.tasks[a.task.id]?.revision).map(a=>a.task.id))
     return {id:run.id,generation:run.plan.generation,revision:run.plan.revision,workflowSkillDir:this.skillRoot,file:join(this.directory,'orchestration.json'),
       ready:Object.values(run.plan.tasks).filter(t=>!run.attempts.some(a=>a.task.id===t.id) && t.depends.every(d=>accepted.has(d))).map(t=>t.id),
-      routeSupport:this.workers.routeSupport(), usage:aggregateUsage(run.attempts.flatMap(a=>Object.values(a.usage??{}))),
-      coordination:this.coordinationUsage(run), cost:'native token counts only; no billing feed is configured, so no monetary cost is reported', lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,outcome:a.outcome,consults:a.consults,strategy:a.effectiveStrategy??a.strategy,tier:a.tier,phase:a.phase,usage:this.attemptUsage(a),handoff:a.handoff?{requestId:a.handoff.requestId,sourceTurnId:a.handoff.sourceTurnId,target:a.handoff.target,messageId:a.handoff.messageId,targetTurnId:a.handoff.targetTurnId,prompt:a.handoff.prompt}:undefined,control:a.control,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,strategy:a.integration.effectiveStrategy,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
+      handoffSupport:this.workers.handoffSupport(), usage:aggregateUsage(run.attempts.flatMap(a=>Object.values(a.usage??{}))),      coordination:this.coordinationUsage(run), cost:'native token counts only; no billing feed is configured, so no monetary cost is reported', lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,activeWorker:this.activeWorker(a),turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,outcome:a.outcome,consults:a.consults,strategy:a.effectiveStrategy??a.strategy,tier:a.tier,phase:a.phase,usage:this.attemptUsage(a),handoff:a.handoff?{requestId:a.handoff.requestId,fromWorker:a.handoff.fromWorker,toWorker:a.handoff.toWorker,sourceTurnId:a.handoff.sourceTurnId,targetTier:a.handoff.targetTier,targetConfig:a.handoff.targetConfig,status:a.handoff.status,threadId:a.handoff.threadId,messageId:a.handoff.messageId,targetTurnId:a.handoff.targetTurnId,prompt:a.handoff.prompt}:undefined,control:a.control,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,strategy:a.integration.effectiveStrategy,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
   }
   execute(parent: string, input: WorkflowAction) {
     // ponytail: serialize short control operations; per-repository queues if measured contention requires it.
@@ -578,10 +597,13 @@ export class Workflow {
       // handoff turn, there is nothing to record as a candidate result.
       await this.observe(run)
       if (a.handoff!==undefined) {
-        const latest=await this.workers.get(run.parent,a.worker)
-        if (latest.reports.at(-1)?.turnId===a.handoff.sourceTurnId) return this.summary(run)
+        // While the recorded handover has produced no confirmed successor turn
+        // there is nothing to record as a result; a late report from the source
+        // stays historical evidence.
+        const latest=await this.workers.get(run.parent,this.activeWorker(a))
+        if (a.handoff.targetTurnId===undefined || latest.reports.at(-1)?.turnId===a.handoff.sourceTurnId) return this.summary(run)
       }
-      const report=await this.report(run,a.worker,a.turn)
+      const report=await this.report(run,this.activeWorker(a),a.turn)
       if (input.result && !isAbsolute(input.result)) throw new Error('result must be an absolute retained report path')
       const directory=this.resultDirectory(run,a);mkdirSync(directory,{recursive:true,mode:0o700})
       const retained=join(directory,'result.md')
@@ -618,8 +640,8 @@ export class Workflow {
       if (a.supersededRevision) throw new Error('Task contract was revised; retain the old result and use the revised attempt')
       if (a.state!=='candidate') throw new Error('Record the candidate first')
       if (a.task.review==='independent' && (!a.review || await this.verdict(run,a.review)!=='passed')) throw new Error('Independent candidate review has not passed')
-      const report=await this.report(run,a.worker,a.turn)
-      if (report.acceptance==='pending') await this.workers.accept(parent,a.worker,report.turnId,'accepted',true)
+      const report=await this.report(run,this.activeWorker(a),a.turn)
+      if (report.acceptance==='pending') await this.workers.accept(parent,this.activeWorker(a),report.turnId,'accepted',true)
       else if (report.acceptance!=='accepted') throw new Error('Task report has a conflicting acceptance')
       const previous=a.state;a.state='accepted'
       try {this.save()} catch(error) {a.state=previous;throw error}
@@ -627,7 +649,7 @@ export class Workflow {
     } else if (input.action==='archive') {
       if (['accepted','delivered','released'].includes(a.state)) throw new Error('Accepted work needs planned disposition, not failed-attempt archival')
       if (input.processesStopped!==true) throw new Error('Confirm task-owned processes are stopped before archival')
-      const worker=(await this.workers.list(parent)).find(w=>w.id===a.worker)
+      const worker=(await this.workers.list(parent)).find(w=>w.id===this.activeWorker(a))
       if (worker && worker.state!=='idle') throw new Error('Resolve worker execution ownership before archival')
       const lane=run.lanes.find(l=>l.name===a.lane)
       if (lane) await this.clean(lane.path)
@@ -676,17 +698,17 @@ export class Workflow {
       if (!input.text?.trim()) throw new Error('Correction text required')
       const selected=input.recipient??'task'
       if (!['task','review','integration-review','resolution'].includes(selected)) throw new Error('Unknown continuation recipient')
-      const id=selected==='review'?a.review?.worker:selected==='integration-review'?a.integration?.review?.worker:selected==='resolution'?a.integration?.resolution:a.worker
+      const id=selected==='review'?a.review?.worker:selected==='integration-review'?a.integration?.review?.worker:selected==='resolution'?a.integration?.resolution:this.activeWorker(a)
       if (!id) throw new Error('No such reviewer')
       if (selected==='resolution' && !a.integration?.conflict) throw new Error('Resolution already retained; refresh integration for further changes')
-      if (id===a.worker && !['running','candidate','unknown','blocked'].includes(a.state)) throw new Error('Accepted work requires a new planned attempt')
+      if (id===this.activeWorker(a) && !['running','candidate','unknown','blocked'].includes(a.state)) throw new Error('Accepted work requires a new planned attempt')
       const w=await this.workers.get(parent,id)
       if (w.state==='running') await this.workers.steer(parent,id,w.turnId!,input.text!,true)
       else {
         await this.capacity(run)
         if (w.state!=='idle') throw new Error('Resume confirmed idle history before continuing')
         const next=await this.workers.append(parent,id,input.text!,true)
-        if (id===a.worker) {a.turn=next.turnId??undefined;a.state='running';delete a.candidate;if(a.review)(a.previousReviews??=[]).push(a.review);delete a.review}
+        if (id===this.activeWorker(a)) {a.turn=next.turnId??undefined;a.state='running';delete a.candidate;if(a.review)(a.previousReviews??=[]).push(a.review);delete a.review}
         else if (selected!=='resolution') {const r=selected==='review'?a.review!:a.integration!.review!;r.turn=next.turnId??undefined;delete r.verdict}
         this.save()
       }
@@ -696,7 +718,7 @@ export class Workflow {
       const lane=run.lanes.find(l=>l.name===a.lane)
       if (lane) await this.clean(lane.path)
       if (a.integration) await this.clean(a.integration.path)
-      for (const id of [a.worker,a.review?.worker,a.integration?.review?.worker,a.integration?.resolution,...(a.previousReviews??[]).map(r=>r.worker),...(a.consults??[]).map(consult=>consult.id)].filter(Boolean) as string[]) {
+      for (const id of [a.worker,a.handoff?.toWorker,a.review?.worker,a.integration?.review?.worker,a.integration?.resolution,...(a.previousReviews??[]).map(r=>r.worker),...(a.consults??[]).map(consult=>consult.id)].filter(Boolean) as string[]) {
         const w=(await this.workers.list(parent)).find(w=>w.id===id)
         if (!w) continue
         if (w.reports.some(r=>!r.acknowledgedAt)) for (const r of w.reports) await this.workers.acknowledge(parent,id,r.turnId)

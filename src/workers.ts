@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
@@ -6,25 +7,14 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-subagent";
 import * as subagentInternal from "@deepseek-ai/dsh-subagent/internal";
 import type { NativeExecution, NativeExecutionReport } from "dsh-codex-app-provider";
-import type {} from "dsh-codex-app-provider";
 import type { WorkflowStore } from "./store.js";
 import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
-import type { Boundary } from "./types.js";
+import type { Boundary, ThreadHandoffService } from "./types.js";
 import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
-import { bindCodingStrategy, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
+import { bindCodingStrategy, snapshotProfile, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
 import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
 
 const { queueHostSubagentPrompt, steerHostSubagentPrompt } = subagentInternal;
-
-/**
- * The route-carrying continuation adapter, present only when the installed
- * subagent package implements it. Reading it through the namespace keeps this
- * plugin loadable against a package set that predates the capability; the
- * Host then reports the route as unsupported instead of silently running the
- * old configuration.
- */
-const continueWithRoute: ContinueWithRoute | undefined =
-  (subagentInternal as unknown as { continueHostSubagentPrompt?: ContinueWithRoute }).continueHostSubagentPrompt;
 
 /**
  * Native execution facts this Host reads. The confirmed model/effort and the
@@ -46,17 +36,6 @@ interface SessionTurn {
   /** Epoch milliseconds of the turn's closing event. */
   createdAt: number;
 }
-
-/** Signature of the route-carrying continuation adapter. */
-export type ContinueWithRoute = (
-  runtime: Context["subagents"],
-  parent: Agent,
-  childId: SessionId,
-  content: { type: "text"; text: string }[],
-  source: { kind: "user" },
-  signal: AbortSignal,
-  route: { provider?: string; model?: string; reasoningEffort?: string },
-) => Promise<string>;
 
 export type ReportAcceptance = "pending" | "accepted" | "changes-requested";
 
@@ -118,20 +97,37 @@ export interface ConsultationRequest {
   startKey: string;
 }
 
-/** One recorded in-thread handoff from an opening phase to the continuing tier. */
+/**
+ * One recorded handover from an opening execution to a successor child.
+ *
+ * The source keeps its identity, history and reports but cannot continue; the
+ * successor owns the assignment. In the Codex-to-Codex route the successor also
+ * owns the original native thread, which is why the thread identity is recorded
+ * here for audit and reconciliation.
+ */
 export interface HandoffRecord {
-  /** Idempotency key of the continuation this handoff delivered. */
+  /** Host request identity; a retry completes the same handover. */
   requestId: string;
+  /** Opening execution that requested the handoff. */
+  fromWorker: string;
   /** Completed turn whose control report requested the handoff. */
   sourceTurnId: string;
-  /** Tier the worker continues on. */
-  target: Tier;
-  /** Native message id the continuation was admitted as. */
-  messageId: string;
+  /** Successor child identity, fixed before any side effect. */
+  toWorker: string;
+  /** Tier the successor continues on. */
+  targetTier: Tier;
+  /** Target model configuration, captured from the bound Profile snapshot. */
+  targetConfig: RoleInput;
   /** The continuation prompt bound to the switch, kept for audit. */
   prompt: string;
-  /** First turn observed after the switch, once the native execution reports one. */
+  /** How far this handover has progressed. */
+  status: "reserved" | "bound" | "started" | "confirmed";
+  /** Native message id the continuation was admitted as. */
+  messageId?: string;
+  /** First turn observed after the switch, once the successor reports one. */
   targetTurnId?: string;
+  /** Native thread the successor continues; the source's original thread. */
+  threadId?: string;
   at: number;
 }
 
@@ -149,6 +145,8 @@ export interface NativeChildRecord {
   coding?: { def: RoleInput; sup: RoleInput };
   /** The one handoff this execution performed, if its opening phase requested one. */
   handoff?: HandoffRecord;
+  /** The handover this child was created to continue, when it is a successor. */
+  handoffFrom?: { fromWorker: string; requestId: string };
   closed?: boolean;
   dispatches: { key: string; text: string; phase: "pending" | "accepted"; previousTurnId?: string; messageId?: string }[];
   acceptance: Record<string, { value: ReportAcceptance; acknowledgedAt?: number }>;
@@ -167,6 +165,7 @@ export interface WorkerProjection {
   strategy?: BoundStrategy;
   /** Authorized route target the native execution has not confirmed yet. */
   pending?: { model?: string; reasoningEffort?: string };
+  /** The handover this execution performed, if its opening phase requested one. */
   handoff?: HandoffRecord;
   state: "idle" | "running" | "waiting-approval" | "interrupt-requested" | "unknown";
   reports: readonly Report[];
@@ -187,9 +186,7 @@ export class WorkflowWorkers {
   private readonly request = new AsyncLocalStorage<{ parent: Agent; session: Agent["session"]; signal: AbortSignal }>();
 
   constructor(readonly ctx: Context, readonly store: WorkflowStore, readonly configuration: WorkflowConfiguration,
-    readonly defaultProfile?: () => string | undefined, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string,
-    /** Route-carrying continuation adapter; defaults to the installed package's capability. */
-    readonly routeAdapter: ContinueWithRoute | undefined = continueWithRoute) {}
+    readonly defaultProfile?: () => string | undefined, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string) {}
 
   run<T>(parent: Agent, signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
     return Promise.resolve(this.request.run({ parent, session: parent.session, signal }, () => { this.assertIdentity(); return operation(); }));
@@ -416,10 +413,10 @@ export class WorkflowWorkers {
    *
    * Only a `bootstrap` opening phase authorizes a handoff, and only after the
    * native turn that reported it has ended. The Host then continues the same
-   * worker, task and attempt on the other Profile configuration; the parent
+   * task and attempt on a successor child bound to the target tier; the parent
    * model neither approves the switch nor reads the whole log.
    * @param parentId - the authorizing parent Session.
-   * @param id - the managed child.
+   * @param id - the managed child that reported.
    * @param turnId - the completed turn whose report is being read.
    * @returns whether this call performed the handoff.
    */
@@ -442,60 +439,181 @@ export class WorkflowWorkers {
     if (binding?.effective !== "bootstrap" || binding.tier !== "sup" || binding.phase === "continuation") {
       return { accepted: false, signal, reason: `execution control handoff is not authorized for ${phase}` };
     }
-    return await this.performHandoff(parentId, id, turnId, signal, record);
+    return await this.handoffToSuccessor(parentId, id, turnId, signal);
   }
 
-  /** Deliver one authorized handoff continuation and record it on the child. */
-  private async performHandoff(parentId: string, id: string, turnId: string, signal: HandoffSignal, current: NativeChildRecord): Promise<ControlOutcome> {
-    const record = structuredClone(current);
-    const existing = record.handoff;
-    if (existing !== undefined) {
-      // Repeated notifications reuse the recorded continuation instead of
-      // delivering a second one.
-      if (existing.sourceTurnId === turnId) return { accepted: true, signal, handoff: existing };
-      throw new Error("a handoff is already recorded for this execution");
+  /**
+   * Continue one opening execution on a successor child.
+   *
+   * The request identity and the successor child id are recorded before any
+   * side effect, and every step is idempotent, so a lost response or a Host
+   * restart completes the recorded handover instead of dispatching a second
+   * continuation. In the Codex-to-Codex route the provider moves the original
+   * native thread to the successor; across providers the successor imports the
+   * source's sourced executed facts and no thread is shared.
+   * @param parentId - the authorizing parent Session.
+   * @param fromWorker - the opening execution that asked for the handoff.
+   * @param sourceTurnId - the completed turn that carried the control report.
+   * @param signal - the parsed handoff report.
+   * @returns the settled control outcome.
+   */
+  private async handoffToSuccessor(parentId: string, fromWorker: string, sourceTurnId: string, signal: HandoffSignal): Promise<ControlOutcome> {
+    const current = this.record(parentId, fromWorker);
+    const recorded = current.handoff;
+    if (recorded !== undefined && recorded.sourceTurnId !== sourceTurnId) throw new Error("a handoff is already recorded for this execution");
+    if (recorded === undefined) {
+      const refusal = await this.reserveSuccessor(current, sourceTurnId, signal);
+      if ("reason" in refusal) return { accepted: false, signal, reason: refusal.reason };
     }
-    if (record.coding === undefined || record.strategy === undefined) throw new Error("Execution has no bound Profile snapshot to continue from");
-    if (signal.target !== "def") return { accepted: false, signal, reason: `handoff target ${signal.target} is not reachable from the opening phase` };
-    if (this.routeAdapter === undefined) {
-      return { accepted: false, signal, reason: "the installed subagent package cannot change an execution route; rebuild and install the coordinated DSH package set before using bootstrap" };
+    let handoff = this.record(parentId, fromWorker).handoff!;
+    const target = current.coding![handoff.targetTier];
+    const successor = this.successorCapture(current);
+    const sameProvider = target.provider === current.execution.provider;
+    // Bind the original thread before the successor exists: its first model call
+    // resumes that thread, and a binding that fails keeps the recorded request
+    // for a retry rather than permitting a replacement thread.
+    if (sameProvider && handoff.status === "reserved") {
+      const service = this.threadHandoff();
+      if (service === undefined) {
+        return { accepted: false, signal, reason: "the installed provider package cannot transfer a Codex thread; rebuild and install the coordinated package set before using bootstrap" };
+      }
+      let bound;
+      try {
+        bound = await service.handoff({ requestId: handoff.requestId, fromSessionId: fromWorker, toSessionId: handoff.toWorker,
+          model: target.model, reasoningEffort: target.reasoningEffort,
+          developerInstructions: successor.execution.developerInstructions,
+          boundary: { cwd: current.boundary.cwd, writableRoots: current.boundary.writableRoots, network: current.boundary.network } });
+      } catch (error) {
+        return { accepted: false, signal, reason: `the Codex thread handover did not bind: ${String(error)}` };
+      }
+      handoff = this.putHandoff(parentId, fromWorker, { ...handoff, status: "bound", threadId: bound.threadId });
     }
-    const target = record.coding[signal.target];
-    // Continuing under another adapter keeps the DSH session but loses the
-    // native thread, so the executed facts of the previous adapter must travel
-    // with the continuation prompt. Without a projector the handoff is refused
-    // with its concrete reason instead of dropping the implementation history.
-    const crossProvider = target.provider !== record.execution.provider;
+    // Creation and the keyed first dispatch both tolerate repetition; a recorded
+    // request that already started is never sent twice.
+    if (handoff.status === "reserved" || handoff.status === "bound") {
+      await this.create(parentId, { role: successor.role, profile: successor.profile, execution: successor.execution,
+        ...(successor.strategy === undefined ? {} : { strategy: successor.strategy }),
+        ...(successor.coding === undefined ? {} : { coding: successor.coding }),
+        id: handoff.toWorker, name: successor.name, cwd: successor.boundary.cwd, managed: true, boundary: successor.boundary });
+      const started = await this.append(parentId, handoff.toWorker, handoff.prompt, true, `${handoff.requestId}:continue`);
+      handoff = this.putHandoff(parentId, fromWorker, { ...handoff, status: "started",
+        messageId: this.record(parentId, started.id).dispatches.at(-1)?.messageId });
+    }
+    return { accepted: true, signal, handoff };
+  }
+
+  /**
+   * Record a successor before any side effect and return it, or refuse the
+   * handover with the capability this route is missing.
+   * @param current - the opening execution's record.
+   * @param sourceTurnId - the completed turn that requested the handoff.
+   * @param signal - the parsed handoff report.
+   * @returns the recorded handover, or the refusal reason.
+   */
+  private async reserveSuccessor(current: NativeChildRecord, sourceTurnId: string, signal: HandoffSignal): Promise<{ handoff: HandoffRecord } | { reason: string }> {
+    if (signal.target !== "def") return { reason: `handoff target ${signal.target} is not reachable from the opening phase` };
+    if (current.coding === undefined || current.strategy === undefined || current.profile === undefined) {
+      throw new Error("Execution has no bound Profile snapshot to continue from");
+    }
+    const target = current.coding[signal.target];
+    const crossProvider = target.provider !== current.execution.provider;
+    // Continuing under another adapter loses the native thread, so the executed
+    // facts of the previous adapter must travel with the continuation prompt.
+    // Without a projector the handoff is refused with its concrete reason
+    // instead of dropping the implementation history.
     let facts: readonly string[] | undefined;
     if (crossProvider) {
       const read = (this.ctx.codexExecution as { facts?: (sessionId: string) => Promise<readonly string[]> }).facts;
       if (read === undefined) {
-        return { accepted: false, signal, reason: `cross-provider continuation to ${target.provider} needs the installed provider package's sourced execution-fact projector` };
+        return { reason: `cross-provider continuation to ${target.provider} needs the installed provider package's sourced execution-fact projector` };
       }
-      facts = await read.call(this.ctx.codexExecution, id);
+      facts = await read.call(this.ctx.codexExecution, current.id);
+    } else if (this.threadHandoff() === undefined) {
+      return { reason: "the installed provider package cannot transfer a Codex thread; rebuild and install the coordinated package set before using bootstrap" };
     }
-    const requestId = `${id}:handoff:${turnId}`;
-    const prompt = handoffPrompt(signal, crossProvider ? facts ?? [] : undefined);
-    record.handoff = { requestId, sourceTurnId: turnId, target: signal.target, messageId: "", prompt, at: Date.now() };
-    // The recorded request is committed before delivery so a lost response is
-    // observable instead of silently repeating the continuation.
-    this.store.putNativeChild(record);
-    const { parent, signal: operation } = this.context();
-    try {
-      const messageId = await this.routeAdapter(this.ctx.subagents, parent, SessionId(id),
-        [{ type: "text", text: prompt }], { kind: "user" }, operation,
-        { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort });
-      record.handoff = { ...record.handoff, messageId };
-      record.strategy = { ...record.strategy, tier: signal.target, phase: "continuation" };
-      this.store.putNativeChild(record);
-      return { accepted: true, signal, handoff: record.handoff };
-    } catch (error) {
-      // A rejected or unknown delivery keeps the recorded request so the next
-      // observation reconciles it instead of dispatching a second switch.
-      record.strategy = { ...record.strategy, tier: signal.target, phase: "continuation" };
-      this.store.putNativeChild(record);
-      throw error;
-    }
+    const handoff: HandoffRecord = {
+      requestId: `${current.id}:handoff:${sourceTurnId}`,
+      fromWorker: current.id,
+      sourceTurnId,
+      // Fixed before any side effect, so a retry and a restart agree on one child.
+      toWorker: randomUUID(),
+      targetTier: signal.target,
+      targetConfig: { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort },
+      prompt: handoffPrompt(signal, crossProvider ? facts ?? [] : undefined),
+      status: "reserved",
+      at: Date.now(),
+    };
+    // The requested handover and the successor's own record commit before
+    // delivery, so the task's confirmation and release already cover a child
+    // that has not started yet.
+    this.store.putNativeChild({ ...current, handoff });
+    this.store.putNativeChild(this.successorRecord(current, handoff));
+    return { handoff };
+  }
+
+  /** The successor's execution: the bound def configuration with continuation prompts. */
+  private successorCapture(current: NativeChildRecord): NativeChildRecord {
+    const binding = bindCodingStrategy(snapshotProfile(current.coding!), current.strategy!.requested, "continuation");
+    const capture = this.captureSnapshot(current.role, current.profile, current.coding!, boundStrategy(binding), binding.prompts);
+    return { id: "", parentSessionId: current.parentSessionId, name: `${current.name} continue`, role: current.role, profile: current.profile,
+      execution: capture.execution, boundary: current.boundary,
+      ...(capture.strategy === undefined ? {} : { strategy: capture.strategy }),
+      ...(capture.coding === undefined ? {} : { coding: capture.coding }),
+      dispatches: [], acceptance: {} };
+  }
+
+  /** The durable record of one reserved successor, before its child exists. */
+  private successorRecord(current: NativeChildRecord, handoff: HandoffRecord): NativeChildRecord {
+    const successor = this.successorCapture(current);
+    return { ...successor, id: handoff.toWorker, boundary: structuredClone(current.boundary), execution: structuredClone(successor.execution),
+      handoffFrom: { fromWorker: current.id, requestId: handoff.requestId } };
+  }
+
+  /** Persist one handover on its source record and return it. */
+  private putHandoff(parentId: string, fromWorker: string, handoff: HandoffRecord): HandoffRecord {
+    const source = this.record(parentId, fromWorker);
+    this.store.putNativeChild({ ...source, handoff: { ...handoff, at: Date.now() } });
+    return handoff;
+  }
+
+  /**
+   * Confirm one recorded handover from the successor's own native facts.
+   *
+   * The successor's first turn is the durable boundary between the opening and
+   * continuing phases; it is observed rather than assumed from delivery, so a
+   * lost response never invents one.
+   * @param parentId - the authorizing parent Session.
+   * @param handoff - the recorded handover.
+   * @param turnId - the turn the successor currently reports.
+   * @param threadId - the native thread the successor owns, when exposed.
+   * @returns the updated handover, or `undefined` when nothing changed.
+   */
+  confirmHandoff(parentId: string, handoff: HandoffRecord, turnId: string | undefined, threadId: string | undefined): HandoffRecord | undefined {
+    if (handoff.status === "confirmed" || turnId === undefined || turnId === handoff.sourceTurnId) return undefined;
+    const confirmed: HandoffRecord = { ...handoff, status: "confirmed", targetTurnId: turnId,
+      ...(threadId === undefined ? {} : { threadId }), at: Date.now() };
+    this.putHandoff(parentId, handoff.fromWorker, confirmed);
+    return confirmed;
+  }
+
+  /**
+   * The continuation capabilities the installed package set provides: the
+   * controlled Codex thread handover for a same-provider continuation and the
+   * sourced fact projector for a cross-provider one. A handover names the
+   * capability its own route needs, so this summary only reports availability.
+   */
+  handoffSupport(): { supported: boolean; threadHandoff: boolean; factImport: boolean; reason?: string } {
+    const threadHandoff = this.threadHandoff() !== undefined;
+    const factImport = typeof (this.ctx.codexExecution as { facts?: unknown }).facts === "function";
+    return threadHandoff || factImport
+      ? { supported: true, threadHandoff, factImport }
+      : { supported: false, threadHandoff, factImport,
+        reason: "the installed package set provides neither the controlled Codex thread handover nor the sourced execution-fact projector" };
+  }
+
+  /** The trusted-Host thread handover service, when the installed provider publishes one. */
+  private threadHandoff(): ThreadHandoffService | undefined {
+    return (this.ctx as unknown as { get(name: string): unknown }).get("codexHandoff") as ThreadHandoffService | undefined;
   }
 
   /**
@@ -518,29 +636,6 @@ export class WorkflowWorkers {
       writableRoots: [request.artifacts], network: request.network, ports: {} };
     await this.create(parentId, { ...capture, id, name: `consult ${request.workerId}`, cwd: request.cwd, managed: true, boundary });
     return await this.append(parentId, id, request.prompt, true, request.startKey);
-  }
-
-  /**
-   * Record the first turn the native execution ran after a handoff.
-   *
-   * The confirmed target turn is the durable boundary between the opening and
-   * continuing phases; it is observed from native facts rather than assumed
-   * from the delivery, so a lost response never invents one.
-   * @param record - the child's record, already carrying the handoff.
-   * @param turnId - the turn the execution currently reports.
-   * @returns the record to persist, or `undefined` when nothing changed.
-   */
-  noteHandoffTurn(record: NativeChildRecord, turnId: string | undefined): NativeChildRecord | undefined {
-    const handoff = record.handoff;
-    if (handoff === undefined || turnId === undefined || handoff.targetTurnId !== undefined || turnId === handoff.sourceTurnId) return undefined;
-    return { ...record, handoff: { ...handoff, targetTurnId: turnId } };
-  }
-
-  /** Whether the installed package set can continue a worker on another route. */
-  routeSupport(): { supported: boolean; reason?: string } {
-    return this.routeAdapter === undefined
-      ? { supported: false, reason: "the installed subagent package cannot change an execution route" }
-      : { supported: true };
   }
 
   async append(parentId: string, id: string, text: string, managed = false, idempotencyKey?: string): Promise<WorkerProjection> {

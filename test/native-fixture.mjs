@@ -10,10 +10,12 @@ import { WorkflowWorkers } from "../lib/workers.js";
  * Compose a workflow Host around synthetic package configurations: two shipped
  * profiles (`a`, `b`) over one role set, with runtime-composed instructions.
  * @param t - the test context owning the temporary state directory.
- * @param options - child cwd and the role set both profiles carry.
+ * @param options - child cwd, the role set both profiles carry, whether the
+ *   installed provider publishes the controlled thread handover, the sourced
+ *   fact projector, and per-child session events.
  * @returns the composed workers, fake native services, and captured calls.
  */
-export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model: "model-a", reasoningEffort: "high" } }, routeAdapter, facts, sessionEvents } = {}) {
+export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model: "model-a", reasoningEffort: "high" } }, threadHandoff = true, facts, sessionEvents } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "native-workflow-"));
   cwd ??= stateDir;
   t.after(() => rmSync(stateDir, { recursive: true, force: true }));
@@ -26,27 +28,62 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
   const store = new WorkflowStore(join(stateDir, "state"));
   const session = { id: "parent", header: { cwd } }, parent = { id: "parent", session, status: "running" };
   const agents = new Map([[parent.id, parent]]), sessions = new Map([[session.id, session]]), nativeFacts = new Map(), calls = [];
+  const handoffs = new Map(), handoffCalls = [];
+  /**
+   * The provider-side handover stand-in: it records the target binding, refuses
+   * a source that is not confirmed idle, and answers with the source's thread.
+   */
+  const handoffService = threadHandoff ? {
+    async handoff(request) {
+      handoffCalls.push(structuredClone(request));
+      const source = nativeFacts.get(request.fromSessionId);
+      if (source === undefined) throw new Error(`unknown handoff source ${request.fromSessionId}`);
+      if (source.state !== "idle") throw new Error(`source ${request.fromSessionId} is ${source.state}`);
+      const prior = handoffs.get(request.toSessionId);
+      if (prior !== undefined && prior.requestId !== request.requestId) throw new Error("handoff successor identity is already in use");
+      handoffs.set(request.toSessionId, { ...structuredClone(request), threadId: source.threadId });
+      source.handedOff = { toSessionId: request.toSessionId, requestId: request.requestId };
+      return { toSessionId: request.toSessionId, threadId: source.threadId, state: "idle" };
+    },
+    async read(id) {
+      const row = nativeFacts.get(id);
+      if (row === undefined) return undefined;
+      const inbound = handoffs.get(id);
+      return { sessionId: id, threadId: row.threadId, ...(row.handedOff === undefined ? {} : { handedOffTo: row.handedOff.toSessionId }),
+        ...(inbound === undefined ? {} : { handoffFrom: inbound.fromSessionId }) };
+    },
+  } : undefined;
   const begin = (id, options, text) => {
     const previous = nativeFacts.get(id), number = (previous?.number ?? 0) + 1;
-    const childCwd = options.execution?.boundary.cwd ?? previous?.cwd ?? cwd;
+    const handoff = handoffs.get(id);
+    // A successor's first request must carry exactly the execution the recorded
+    // handover bound, the same invariant the real provider enforces.
+    if (handoff !== undefined && previous === undefined && handoff.developerInstructions !== options.execution?.developerInstructions) {
+      throw new Error("successor execution must match the recorded handover");
+    }
+    const childCwd = options?.execution?.boundary.cwd ?? previous?.cwd ?? cwd;
     const child = { id, session: { id, header: { parentSession: parent.id, cwd: childCwd },
-      snapshotEvents: () => sessionEvents?.(id) ?? [] }, status: "running" };
+      snapshotEvents: () => sessionEvents?.(id) ?? [] }, status: "running",
+      options: { provider: options.provider, model: options.model,
+        ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
+        ...(options.execution === undefined ? {} : { execution: options.execution }) } };
     agents.set(id, child); sessions.set(id, child.session);
-    nativeFacts.set(id, { nativeSessionId: id, number, threadId: `thread-${id}`, turnId: `${id}:${number}`, cwd: childCwd,
-      model: options.model, reasoningEffort: options.reasoningEffort, state: "running", reports: previous?.reports ?? [] });
+    nativeFacts.set(id, { nativeSessionId: id, number, threadId: previous?.threadId ?? handoff?.threadId ?? `thread-${id}`,
+      turnId: `${id}:${number}`, cwd: childCwd, model: options.model, reasoningEffort: options.reasoningEffort,
+      state: "running", reports: previous?.reports ?? [] });
     return `inbox-${id}-${number}`;
   };
-  const ctx = { agents, sessions, codexExecution: {
-    async read(id) { return structuredClone(nativeFacts.get(id)); },
-    ...(facts === undefined ? {} : { facts: async id => facts(String(id)) }),
-  }, subagents: {
+  const execution = { async read(id) { return structuredClone(nativeFacts.get(id)); },
+    ...(facts === undefined ? {} : { facts: async id => facts(String(id)) }) };
+  const ctx = { agents, sessions, get: name => name === "codexExecution" ? execution : name === "codexHandoff" ? handoffService : undefined,
+    codexExecution: execution, ...(handoffService === undefined ? {} : { codexHandoff: handoffService }), subagents: {
     async startContinuable(spec) { calls.push(structuredClone({ id: spec.childId, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt) }; },
     async [Symbol.for("dsh.subagent.deliverPrompt")](_parent, id, content, _source, _signal, delivery) {
       calls.push({ id, delivery, content }); return begin(id, nativeFacts.get(id), content);
     },
     interrupt(id) { calls.push({ id, interrupt: true }); nativeFacts.get(id).state = "interrupt-requested"; },
   } };
-  const workers = new WorkflowWorkers(ctx, store, configuration, () => "a", "/skills/codex-workflow", undefined, routeAdapter);
+  const workers = new WorkflowWorkers(ctx, store, configuration, () => "a", "/skills/codex-workflow", undefined);
   const run = operation => workers.run(parent, new AbortController().signal, operation);
   const create = async id => {
     const snapshot = workers.captureRole("reviewer");
@@ -58,5 +95,5 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
     row.reports.push({ threadId: row.threadId, turnId: row.turnId, status: "completed", result: text, createdAt: Date.now() });
     agents.delete(id); sessions.delete(id);
   };
-  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish };
+  return { workers, ctx, parent, store, facts: nativeFacts, calls, configuration, run, create, finish, handoffs, handoffCalls };
 }

@@ -38,120 +38,156 @@ function project(t) {
 }
 
 /**
- * Boot one dispatched bootstrap attempt with an injected route adapter. The
- * adapter records the continuation and moves the child's native facts to the
- * target configuration, standing in for the DSH subagent package.
+ * Boot one dispatched bootstrap attempt and let its opening turn report a
+ * handoff. The fake provider records the target binding, so the successor's
+ * native facts only exist once the Host actually creates it.
  */
-async function dispatched(t, { strategy = "bootstrap", routeAdapter = true, report = HANDOFF_REPORT } = {}) {
+async function dispatched(t, { strategy = "bootstrap", threadHandoff = true, report = HANDOFF_REPORT, roles = DISTINCT, facts } = {}) {
   const { repo, generation, base } = project(t);
-  const deliveries = [];
-  let facts;
-  const adapter = routeAdapter ? async (_runtime, _parent, childId, content, _source, _signal, route) => {
-    deliveries.push({ childId: String(childId), text: content[0].text, route });
-    const row = facts.get(String(childId));
-    row.model = route.model; row.reasoningEffort = route.reasoningEffort; row.state = "running";
-    row.number += 1; row.turnId = `${String(childId)}:${row.number}`;
-    return `handoff-message-${deliveries.length}`;
-  } : undefined;
-  const f = fixture(t, { cwd: repo, roles: DISTINCT, routeAdapter: adapter });
-  facts = f.facts;
+  const f = fixture(t, { cwd: repo, roles, threadHandoff, facts });
   f.store.selectStrategy("parent", strategy);
   const workflow = new Workflow(f.workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input));
   await action({ action: "adopt", generation });
   await action({ action: "dispatch", task: "T001" });
-  const summary = await action({ action: "status" });
+  let summary = await action({ action: "status" });
   const attempt = summary.tasks[0];
   await f.run(async () => { f.finish(attempt.workerId, typeof report === "function" ? report(base) : report); });
-  return { f, action, attempt, deliveries, base, summary };
+  return { f, action, attempt, base, roles };
 }
 
-test("a bootstrap opening report hands the same worker to the def configuration", async t => {
-  const { f, action, attempt, deliveries } = await dispatched(t);
+test("a bootstrap opening report continues the task on a def successor child", async t => {
+  const { f, action, attempt, base } = await dispatched(t);
   let summary = await action({ action: "status" });
-  assert.equal(deliveries.length, 1, "the Host delivers the continuation once");
-  assert.deepEqual(deliveries[0].route, { provider: "codex", model: "def-model", reasoningEffort: "medium" });
-  assert.match(deliveries[0].text, /same coding_worker/);
-  assert.match(deliveries[0].text, /Remaining work:\nfinish the remaining tests/);
-  assert.equal(deliveries[0].childId, attempt.workerId, "the same worker continues");
-
   let task = summary.tasks.find(item => item.task === "T001");
+
+  // The successor is a new DSH child, not the opening worker.
+  const handoff = task.handoff;
+  assert.equal(f.handoffCalls.length, 1, "the Host binds the thread exactly once");
+  assert.equal(handoff.fromWorker, attempt.workerId, "the recorded source is the opening execution");
+  assert.notEqual(handoff.toWorker, attempt.workerId, "the successor is a new child");
+  assert.equal(handoff.status, "started");
+  assert.equal(handoff.targetTier, "def");
+  assert.deepEqual(handoff.targetConfig, { provider: "codex", model: "def-model", reasoningEffort: "medium" });
+  assert.equal(handoff.requestId, `${attempt.workerId}:handoff:${handoff.sourceTurnId}`);
+  assert.equal(handoff.sourceTurnId, attempt.turnId, "the source turn is the opening turn");
+  assert.equal(handoff.messageId, `inbox-${handoff.toWorker}-1`);
+  assert.match(handoff.prompt, /Continue as the same coding_worker/);
+  assert.match(handoff.prompt, /Remaining work:\nfinish the remaining tests/);
   assert.equal(task.state, "running", "the handoff does not end the assignment");
   assert.equal(task.tier, "def");
   assert.equal(task.phase, "continuation");
-  assert.equal(task.handoff.sourceTurnId, attempt.turnId, "the recorded source turn is the opening turn");
-  assert.equal(task.handoff.messageId, "handoff-message-1");
-  assert.match(task.handoff.prompt, /Continue as the same coding_worker/, "the bound continuation prompt is retained for audit");
-  assert.equal(task.handoff.targetTurnId, undefined, "the target turn is recorded only from native facts");
-  assert.equal(task.handoff.requestId, `${attempt.workerId}:handoff:${task.handoff.sourceTurnId}`);
+  // Until the successor's own turn is observed the source still owns the task.
+  assert.equal(task.activeWorker, attempt.workerId);
+  assert.equal(task.handoff.threadId, f.facts.get(attempt.workerId).threadId, "the successor keeps the original thread");
 
-  // Repeated observation reuses the recorded continuation instead of a second
-  // one, and confirms the turn the switched execution actually ran.
+  // The successor child is created with the bound def configuration and the
+  // continuation prompts, on the same workspace and authorization boundary.
+  const created = f.calls.find(call => call.id === handoff.toWorker);
+  assert.equal(created.options.model, "def-model");
+  assert.equal(created.options.reasoningEffort, "medium");
+  assert.match(created.options.execution.developerInstructions, /coding_worker \[coding-bootstrap-continuation,coding-adaptive\]/);
+  assert.deepEqual(created.options.execution.boundary, f.facts.get(attempt.workerId).boundary ?? created.options.execution.boundary);
+  assert.equal(f.facts.get(handoff.toWorker).threadId, f.facts.get(attempt.workerId).threadId, "the Codex thread is unchanged");
+  assert.notEqual(f.facts.get(handoff.toWorker).nativeSessionId, f.facts.get(attempt.workerId).nativeSessionId, "the DSH child identity changed");
+
+  // The successor's first completed turn confirms the handover from native facts.
+  await f.run(async () => { f.finish(handoff.toWorker, "continued work"); });
   summary = await action({ action: "status" });
-  assert.equal(deliveries.length, 1);
-  const confirmed = summary.tasks.find(item => item.task === "T001").handoff;
-  assert.equal(confirmed.requestId, task.handoff.requestId);
-  assert.equal(confirmed.targetTurnId, f.facts.get(attempt.workerId).turnId, "the confirmed target turn comes from native facts");
+  task = summary.tasks.find(item => item.task === "T001");
+  assert.equal(task.handoff.status, "confirmed");
+  assert.equal(task.handoff.targetTurnId, f.facts.get(handoff.toWorker).reports.at(-1).turnId);
+  assert.equal(task.handoff.threadId, f.facts.get(attempt.workerId).threadId);
+  assert.equal(task.activeWorker, handoff.toWorker, "the confirmed successor owns the task");
+  assert.equal(task.handoff.requestId, handoff.requestId, "re-observation reuses the recorded request");
 
-  // The handoff turn is not a candidate result: recording it returns the same
-  // continuing attempt instead of failing the result contract.
-  summary = await action({ action: "record-result", task: "T001" });
-  const recorded = summary.tasks.find(item => item.task === "T001");
-  assert.equal(recorded.state, "running");
-  assert.equal(recorded.result, undefined);
-  assert.equal(deliveries.length, 1);
-  assert.deepEqual(f.store.read().nativeChildren[attempt.workerId].strategy, {
-    requested: "bootstrap", effective: "bootstrap", tier: "def", phase: "continuation",
-  });
+  // Repeated observation never creates a second successor or continuation.
+  summary = await action({ action: "status" });
+  assert.equal(f.calls.filter(call => call.id === handoff.toWorker).length, 1, "the continuation is delivered once");
+  assert.equal(f.handoffCalls.length, 1);
+  assert.equal(summary.tasks.find(item => item.task === "T001").handoff.toWorker, handoff.toWorker);
+
+  // A late source report is history: it neither becomes the candidate nor moves
+  // the active worker back.
+  await f.run(async () => { f.finish(attempt.workerId, "late source report"); });
+  summary = await action({ action: "status" });
+  task = summary.tasks.find(item => item.task === "T001");
+  assert.equal(task.activeWorker, handoff.toWorker);
+  assert.equal(task.result, undefined);
+  assert.ok(base);
 });
 
-test("native usage is attributed to the task and deduplicated by turn", async t => {
+test("the handoff keeps the dispatch snapshot after a Profile edit", async t => {
   const { f, action, attempt } = await dispatched(t);
-  // The continuing configuration completes a further turn.
-  const row = f.facts.get(attempt.workerId);
-  row.number += 1; row.turnId = `${attempt.workerId}:${row.number}`;
-  f.finish(attempt.workerId, "done");
-  row.reports.at(-1).usage = { totalTokens: 0, inputTokens: 100, cachedInputTokens: 20, cacheWriteInputTokens: null, outputTokens: 5, reasoningOutputTokens: 2 };
-  let summary = await action({ action: "status" });
-  const first = summary.tasks.find(item => item.task === "T001").usage;
-  assert.deepEqual(first, { totalTokens: 0, inputTokens: 100, cachedInputTokens: 20, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 2, calls: 2, unreported: 1 });
-  summary = await action({ action: "status" });
-  assert.deepEqual(summary.tasks.find(item => item.task === "T001").usage, first, "re-observing the same turns changes nothing");
-  assert.deepEqual(summary.usage, first, "the run total sums its attempts");
-  // A turn that reported no usage stays counted as unreported, never as zero.
-  assert.equal(first.unreported, 1);
-});
-
-test("parent coordination usage is reported separately from task usage", async t => {
-  const { f, action, attempt } = await dispatched(t);
-  // The session object itself is the identity the Host checks, so its log is
-  // attached in place rather than replaced.
-  const parentSession = f.ctx.sessions.get("parent");
-  parentSession.snapshotEvents = () => [
-      { type: "assistant/message", seq: 1, time: 1, data: { turn: 1, step: 1, message: { role: "assistant", id: "m1", content: [] },
-        usage: { inputTokens: 30, outputTokens: 7, cacheReadTokens: 5, totalTokens: 42 } } },
-      { type: "assistant/message", seq: 2, time: 2, data: { turn: 2, step: 1, message: { role: "assistant", id: "m2", content: [] },
-        usage: { inputTokens: 10, outputTokens: 2 } } },
-  ];
-  const summary = await action({ action: "status" });
-  assert.deepEqual(summary.coordination,
-    { totalTokens: 42, inputTokens: 40, cachedInputTokens: 5, cacheWriteInputTokens: 0, outputTokens: 9, reasoningOutputTokens: 0, calls: 2, unreported: 0 },
-    "the parent's own requests are summed as coordination");
-  assert.equal(summary.usage.calls, 1, "task usage counts only native child turns");
-  assert.match(summary.cost, /no billing feed is configured/, "money is never fabricated from token counts");
+  const toWorker = (await action({ action: "status" })).tasks[0].handoff.toWorker;
+  // The live catalog now offers another def configuration; the successor must
+  // still run the configuration captured at dispatch.
+  f.configuration.setUserConfigs({ a: { roles: { ...DISTINCT, def_coding_worker: { provider: "codex", model: "edited-model", reasoningEffort: "low" } } } });
+  const created = f.calls.find(call => call.id === toWorker);
+  assert.equal(created.options.model, "def-model", "the bound snapshot decides the successor configuration");
+  assert.equal(f.handoffCalls[0].model, "def-model");
   assert.ok(attempt.workerId);
 });
 
+test("native usage is attributed to the task and deduplicated across both children", async t => {
+  const { f, action, attempt } = await dispatched(t);
+  let summary = await action({ action: "status" });
+  const toWorker = summary.tasks.find(item => item.task === "T001").handoff.toWorker;
+  // The successor completes its first turn and one further turn with usage.
+  await f.run(async () => { f.finish(toWorker, "continued"); });
+  const row = f.facts.get(toWorker);
+  row.number += 1; row.turnId = `${toWorker}:${row.number}`;
+  await f.run(async () => { f.finish(toWorker, "done"); });
+  row.reports.at(-1).usage = { totalTokens: 0, inputTokens: 100, cachedInputTokens: 20, cacheWriteInputTokens: null, outputTokens: 5, reasoningOutputTokens: 2 };
+
+  summary = await action({ action: "status" });
+  const usage = summary.tasks.find(item => item.task === "T001").usage;
+  assert.equal(usage.calls, 3, "the opening turn and both successor turns are counted once each");
+  assert.equal(usage.inputTokens, 100);
+  assert.equal(usage.unreported, 2, "turns with no reported usage stay unreported, never zero");
+  summary = await action({ action: "status" });
+  assert.deepEqual(summary.tasks.find(item => item.task === "T001").usage, usage, "re-observing the same turns changes nothing");
+  assert.ok(attempt.workerId);
+});
+
+test("a continuation is addressed to the successor once the handover is confirmed", async t => {
+  const { f, action, attempt } = await dispatched(t);
+  let summary = await action({ action: "status" });
+  const toWorker = summary.tasks.find(item => item.task === "T001").handoff.toWorker;
+  await f.run(async () => { f.finish(toWorker, "continued"); });
+  summary = await action({ action: "status" });
+  assert.equal(summary.tasks.find(item => item.task === "T001").activeWorker, toWorker);
+
+  await action({ action: "continue", task: "T001", text: "Also cover the empty input." });
+  const delivered = f.calls.filter(call => call.delivery === "queue").at(-1);
+  assert.equal(delivered.id, toWorker, "the correction continues the successor, not the source");
+  const record = f.store.read().nativeChildren[toWorker];
+  assert.deepEqual(record.handoffFrom, { fromWorker: attempt.workerId, requestId: record.handoffFrom.requestId });
+  assert.equal(f.store.read().nativeChildren[attempt.workerId].handoff.status, "confirmed", "the source keeps the history of the handover");
+});
+
 test("a control report outside its authorized phase is recorded, not performed", async t => {
-  const { action, deliveries, attempt } = await dispatched(t, { strategy: "adaptive" });
+  const { f, action, attempt } = await dispatched(t, { strategy: "adaptive" });
   const summary = await action({ action: "status" });
-  assert.equal(deliveries.length, 0, "adaptive does not authorize a handoff");
+  assert.equal(f.handoffCalls.length, 0, "adaptive does not authorize a handoff");
   const task = summary.tasks.find(item => item.task === "T001");
   assert.equal(task.state, "running");
   assert.equal(task.tier, "def");
   assert.equal(task.handoff, undefined);
   assert.deepEqual(task.control, { turnId: attempt.turnId, signal: "handoff",
     reason: "execution control handoff is not authorized for adaptive phase main" });
+});
+
+test("a package set without the thread handover reports the missing route", async t => {
+  const { f, action } = await dispatched(t, { threadHandoff: false });
+  const summary = await action({ action: "status" });
+  assert.deepEqual(summary.handoffSupport, { supported: false, threadHandoff: false, factImport: false,
+    reason: "the installed package set provides neither the controlled Codex thread handover nor the sourced execution-fact projector" });
+  const task = summary.tasks.find(item => item.task === "T001");
+  assert.equal(task.state, "running");
+  assert.equal(task.handoff, undefined);
+  assert.equal(task.activeWorker, task.workerId, "the opening execution keeps the assignment");
+  assert.match(task.control.reason, /cannot transfer a Codex thread/);
 });
 
 test("a declared needs-decision outcome stays visible and creates no upgrade child", async t => {
@@ -164,6 +200,52 @@ test("a declared needs-decision outcome stays visible and creates no upgrade chi
   assert.equal(task.state, "blocked", "the attempt stays blocked");
   assert.equal(task.outcome, "needs-decision", "the declared outcome is preserved verbatim");
   assert.equal(f.calls.length, callsBefore, "a declared decision need never starts a higher-capability child");
+});
+
+test("the successor owns the candidate and release closes both children without touching the thread", async t => {
+  const { f, action, attempt, base } = await dispatched(t);
+  let summary = await action({ action: "status" });
+  const toWorker = summary.tasks.find(item => item.task === "T001").handoff.toWorker;
+  const thread = f.facts.get(attempt.workerId).threadId;
+
+  // The successor continues the assignment and returns the final result.
+  const lane = summary.lanes.find(item => item.name === attempt.lane);
+  writeFileSync(join(lane.path, "a.txt"), "changed\n"); git(lane.path, "add", "a.txt"); git(lane.path, "commit", "-m", "change");
+  const candidate = git(lane.path, "rev-parse", "HEAD");
+  await f.run(async () => { f.finish(toWorker, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${candidate}\n- Outcome: complete\n`); });
+  summary = await action({ action: "record-result", task: "T001" });
+  let task = summary.tasks.find(item => item.task === "T001");
+  assert.equal(task.state, "candidate");
+  assert.equal(task.activeWorker, toWorker, "the candidate belongs to the current executor");
+  assert.equal(f.facts.get(toWorker).threadId, thread, "the successor still runs on the original thread");
+
+  const review = task.review;
+  await f.run(async () => { f.finish(review.worker, JSON.stringify({ candidate, input: base, verdict: "passed", findings: "Verified candidate" })); });
+  await action({ action: "accept", task: "T001" });
+  await action({ action: "integrate", task: "T001" });
+  summary = await action({ action: "release", task: "T001", processesStopped: true });
+  task = summary.tasks.find(item => item.task === "T001");
+  assert.equal(task.state, "released");
+  // Both executions of the task are disposed, and closing the source never
+  // closed the thread the successor continues.
+  assert.equal(f.store.read().nativeChildren[attempt.workerId].closed, true);
+  assert.equal(f.store.read().nativeChildren[toWorker].closed, true);
+  assert.equal(f.facts.get(toWorker).threadId, thread);
+  assert.equal(f.store.read().nativeChildren[attempt.workerId].handoff.threadId, thread);
+  assert.equal(f.facts.get(attempt.workerId).handedOff.toSessionId, toWorker);
+});
+
+test("the recorded handover survives a restart with the same successor identity", async t => {
+  const { f, action, attempt } = await dispatched(t);
+  const handoff = (await action({ action: "status" })).tasks.find(item => item.task === "T001").handoff;
+  // A restarted Host reads the same fixed request and successor identities from
+  // durable state instead of choosing a second continuation.
+  const reloaded = new WorkflowStore(f.store.stateDir).read();
+  assert.equal(reloaded.nativeChildren[attempt.workerId].handoff.requestId, handoff.requestId);
+  assert.equal(reloaded.nativeChildren[attempt.workerId].handoff.toWorker, handoff.toWorker);
+  assert.equal(reloaded.nativeChildren[attempt.workerId].handoff.status, "started");
+  assert.deepEqual(reloaded.nativeChildren[handoff.toWorker].handoffFrom, { fromWorker: attempt.workerId, requestId: handoff.requestId });
+  assert.equal(reloaded.nativeChildren[handoff.toWorker].strategy.phase, "continuation");
 });
 
 const CONSULT_REPORT = report => ["Execution control: consult",
@@ -185,6 +267,7 @@ test("an adaptive worker's consultation starts one read-only expert on the sup c
   assert.equal(consult.state, "running");
   assert.equal(consult.question, "which option keeps the wire format stable?");
   assert.equal(consult.contractRevision, 1);
+  assert.equal(consult.worker, attempt.workerId, "the expert is bound to the requesting execution");
 
   const created = f.calls.slice(before).find(call => call.options !== undefined);
   assert.equal(created.id, consult.id, "the expert runs under the recorded child identity");
@@ -223,6 +306,7 @@ test("the expert conclusion returns to the same worker, which still owns the res
   assert.equal(task.tier, "def", "the requesting worker keeps its own configuration");
   const returned = f.calls.filter(call => call.delivery === "queue" && call.content[0].text.includes("Consultation conclusion:"));
   assert.equal(returned.length, 1);
+  assert.equal(returned[0].id, attempt.workerId, "the conclusion returns to the requesting execution");
   assert.match(returned[0].content[0].text, /Use the versioned envelope and keep the legacy reader\./);
   assert.match(returned[0].content[0].text, /Advice is not acceptance/);
   assert.equal(f.facts.get(attempt.workerId).turnId, task.turnId, "the worker's new turn is the returned conclusion");
@@ -264,79 +348,81 @@ test("a consultation outside its authorized phases is refused, not dispatched", 
 
 const CROSS_PROVIDER = { ...DISTINCT, def_coding_worker: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" } };
 
-/** Adopt, dispatch and hand off one bootstrap opening phase under the given configuration. */
-async function crossProviderAttempt(t, { facts, sessionEvents } = {}) {
-  const { repo, generation, base } = project(t);
-  const deliveries = [];
-  let factsReads = 0;
-  const f = fixture(t, { cwd: repo, roles: CROSS_PROVIDER, facts, sessionEvents,
-    routeAdapter: async (_runtime, _parent, _childId, content, _source, _signal, route) => {
-      deliveries.push({ content: content[0].text, route });
-      return "handoff-message";
-    } });
-  f.store.selectStrategy("parent", "bootstrap");
-  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
-  const action = input => f.run(() => workflow.execute("parent", input));
-  await action({ action: "adopt", generation });
-  await action({ action: "dispatch", task: "T001" });
-  const attempt = (await action({ action: "status" })).tasks[0];
-  await f.run(async () => { f.finish(attempt.workerId, HANDOFF_REPORT); });
-  const summary = await action({ action: "status" });
-  return { f, action, base, deliveries, summary, attempt, factsReads };
-}
-
 test("a cross-provider handoff without a fact projector is refused instead of dropping history", async t => {
-  const { deliveries, summary } = await crossProviderAttempt(t);
+  const { f, action } = await dispatched(t, { roles: CROSS_PROVIDER });
+  const summary = await action({ action: "status" });
   const task = summary.tasks.find(item => item.task === "T001");
-  assert.equal(deliveries.length, 0, "no continuation is delivered without the fact import");
+  assert.equal(f.calls.length, 1, "no successor child is created without the fact import");
   assert.equal(task.handoff, undefined);
   assert.equal(task.tier, "sup", "the worker keeps its opening configuration");
   assert.match(task.control.reason, /cross-provider continuation to deepseek-official needs the installed provider package's sourced execution-fact projector/);
 });
 
-test("a cross-provider handoff carries the sourced executed facts to the new adapter", async t => {
-  const facts = [
+test("a cross-provider handoff starts a sibling successor with the sourced facts", async t => {
+  const imported = [
     "[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)",
     "[source: codex thread=th1 turn=t1 item=i2] file change: src/a.ts (update)",
   ];
-  const { deliveries, summary, attempt } = await crossProviderAttempt(t, { facts: () => facts });
+  const { f, action, attempt } = await dispatched(t, { roles: CROSS_PROVIDER, facts: () => imported });
+  const summary = await action({ action: "status" });
   const task = summary.tasks.find(item => item.task === "T001");
-  assert.equal(task.handoff.target, "def");
+  const handoff = task.handoff;
+  assert.equal(handoff.targetTier, "def");
   assert.equal(task.tier, "def");
-  assert.equal(deliveries.length, 1);
-  assert.deepEqual(deliveries[0].route, { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" });
-  assert.match(deliveries[0].content, /Executed facts imported from the previous adapter \(already performed; do not re-run them\):/);
-  assert.match(deliveries[0].content, /\[source: codex thread=th1 turn=t1 item=i1\] command: pnpm test \(exit 0\)/);
-  assert.match(deliveries[0].content, /Long native output was shortened and remains addressable/);
-  assert.match(deliveries[0].content, /Do not hand off again/);
+  assert.notEqual(handoff.toWorker, attempt.workerId);
+  assert.equal(f.handoffCalls.length, 0, "a cross-provider continuation does not share the Codex thread");
+  assert.equal(handoff.threadId, undefined, "no native thread binding is recorded");
+  assert.match(handoff.prompt, /Executed facts imported from the previous adapter \(already performed; do not re-run them\):/);
+  assert.match(handoff.prompt, /\[source: codex thread=th1 turn=t1 item=i1\] command: pnpm test \(exit 0\)/);
+  assert.match(handoff.prompt, /Long native output was shortened and remains addressable/);
+  assert.match(handoff.prompt, /Do not hand off again/);
 
-  // An adapter that recorded nothing says so rather than implying empty history.
-  const bare = await crossProviderAttempt(t, { facts: () => [] });
-  assert.match(bare.deliveries[0].content, /No executed facts were recorded before the switch/);
-  assert.equal(bare.summary.tasks.find(item => item.task === "T001").tier, "def");
-  assert.ok(attempt.workerId);
+  const created = f.calls.find(call => call.id === handoff.toWorker);
+  assert.equal(created.options.provider, "deepseek-official", "the successor runs under the target provider");
+  assert.equal(created.options.model, "deepseek-flash");
+  assert.equal(f.facts.get(handoff.toWorker).threadId, `thread-${handoff.toWorker}`, "the successor owns no Codex thread");
+
+  // A projector that recorded nothing says so rather than implying empty history.
+  const bare = await dispatched(t, { roles: CROSS_PROVIDER, facts: () => [] });
+  const bareTask = (await bare.action({ action: "status" })).tasks.find(item => item.task === "T001");
+  assert.match(bareTask.handoff.prompt, /No executed facts were recorded before the switch/);
 });
 
-test("turns on the new adapter are read from the DSH session, so completion never stalls", async t => {
-  const events = [];
-  const { f, action, base, summary, attempt } = await crossProviderAttempt(t, {
-    facts: () => ["[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)"],
-  });
-  assert.equal(summary.tasks.find(item => item.task === "T001").tier, "def", "the execution continues on the other adapter");
-  // The child still owns its DSH session; only the recording adapter changed.
-  f.ctx.sessions.set(attempt.workerId, { id: attempt.workerId, header: { id: attempt.workerId, parentSession: "parent" }, snapshotEvents: () => events });
+test("turns on a successor adapter are read from the DSH session, so completion never stalls", async t => {
+  const rows = new Map();
+  const { f, action, base, attempt } = await (async () => {
+    const { repo, generation, base } = project(t);
+    const f = fixture(t, { cwd: repo, roles: CROSS_PROVIDER, facts: () => ["[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)"],
+      sessionEvents: id => rows.get(id) ?? [] });
+    f.store.selectStrategy("parent", "bootstrap");
+    const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+    const action = input => f.run(() => workflow.execute("parent", input));
+    await action({ action: "adopt", generation });
+    await action({ action: "dispatch", task: "T001" });
+    const attempt = (await action({ action: "status" })).tasks[0];
+    await f.run(async () => { f.finish(attempt.workerId, HANDOFF_REPORT); });
+    return { f, action, base, attempt };
+  })();
+  const toWorker = (await action({ action: "status" })).tasks.find(item => item.task === "T001").handoff.toWorker;
+  assert.equal((await action({ action: "status" })).tasks.find(item => item.task === "T001").tier, "def",
+    "the execution continues on the other adapter");
 
-  let worker = await f.run(() => f.workers.get("parent", attempt.workerId));
-  assert.equal(worker.state, "running", "the switched turn is in flight, not unknown");
+  // The successor still owns its own DSH session; only the recording adapter changed.
+  rows.set(toWorker, []);
+  let worker = await f.run(() => f.workers.get("parent", toWorker));
+  assert.equal(worker.state, "running", "the new adapter's turn is in flight, not unknown");
   assert.deepEqual(worker.reports, [], "the old adapter's reports do not describe the new one's turns");
 
   const report = `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`;
-  events.push(
+  rows.set(toWorker, [
     { type: "turn/start", seq: 1, time: 1, data: { turn: 1 } },
     { type: "assistant/message", seq: 2, time: 2, data: { turn: 1, step: 1, message: { role: "assistant", id: "m1", content: [{ type: "text", text: report }] } } },
     { type: "turn/end", seq: 3, time: 3, data: { turn: 1, reason: { kind: "completed" } } },
-  );
-  worker = await f.run(() => f.workers.get("parent", attempt.workerId));
+  ]);
+  // The child finished its turn: the live agent is gone and the session log is
+  // the only record of what it ran.
+  f.ctx.agents.delete(toWorker);
+  worker = await f.run(() => f.workers.get("parent", toWorker));
   assert.equal(worker.state, "idle", "the session's closed turn ends the execution");
   assert.equal(worker.turnId, "dsh-1", "turn identity comes from the session log");
   assert.equal(worker.reports.length, 1);
@@ -346,23 +432,14 @@ test("turns on the new adapter are read from the DSH session, so completion neve
   const recorded = (await action({ action: "record-result", task: "T001" })).tasks.find(item => item.task === "T001");
   assert.equal(recorded.outcome, "complete", "the result check reads the new adapter's own report");
   assert.equal(recorded.state, "candidate");
+  assert.equal(recorded.activeWorker, toWorker, "the successor owns the recorded candidate");
 
   // A failed turn on the new adapter reports failure rather than stalling.
-  events.push(
+  rows.get(toWorker).push(
     { type: "turn/start", seq: 4, time: 4, data: { turn: 2 } },
     { type: "turn/end", seq: 5, time: 5, data: { turn: 2, reason: { kind: "error", error: { message: "adapter failed", code: "UNKNOWN" } } } },
   );
-  const failed = await f.run(() => f.workers.get("parent", attempt.workerId));
+  const failed = await f.run(() => f.workers.get("parent", toWorker));
   assert.equal(failed.reports.at(-1).status, "failed");
-});
-
-test("an unsupported package set reports the route instead of silently running the old configuration", async t => {
-  const { action, deliveries } = await dispatched(t, { routeAdapter: false });
-  const summary = await action({ action: "status" });
-  assert.equal(deliveries.length, 0);
-  assert.deepEqual(summary.routeSupport, { supported: false, reason: "the installed subagent package cannot change an execution route" });
-  const task = summary.tasks.find(item => item.task === "T001");
-  assert.equal(task.state, "running");
-  assert.equal(task.handoff, undefined);
-  assert.match(task.control.reason, /cannot change an execution route/);
+  assert.ok(attempt.workerId);
 });
