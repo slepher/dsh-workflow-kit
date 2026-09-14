@@ -6,16 +6,120 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import type { WorkflowWorkers } from './workers.js'
-import type { Report } from './workers.js'
-import { ROLES } from './roles.js'
+import type { Capture, Report } from './workers.js'
+import { ROLES, CONFIG_KEYS, CODING_WORKER } from './roles.js'
+import { CODING_CONFIG_KEY } from './constants.js'
+import { bindIntegrateStrategy, snapshotProfile, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type Tier } from './strategy.js'
+import { parseControlSignal, type ConsultSignal } from './control.js'
+import type { HandoffRecord, ReportUsage } from './workers.js'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { RoleInput } from './configuration.js'
 import type { Boundary } from './types.js'
 
 const exec = promisify(execFile)
 type Task = { network?: 'disabled'|'loopback'; lane?: boolean; cwd?: string; reads?: string[]; writes?: string[]; reports?: string[]; ports?: string[]; id: string; revision: number; role: string; depends: string[]; owned: string[]; resources: string[]; inputs: string[]; review: string; text: string }
 type Plan = { concurrency?: number; generation: string; revision: number; repository: string; target: string; base: string; delivery: string; text: string; policy: { initial: number; max: number; expand: boolean; bases: string[] }; tasks: Record<string, Task> }
 type Review = { worker: string; turn?: string; candidate: string; target?: string; input: string; purpose?: 'disposition'; verdict?: string; report?: string }
-type Integration = { id: string; path: string; target: string; source: string; candidate?: string; conflict: boolean; requiredReview: boolean; review?: Review; resolution?: string; error?: string; delivered?: string }
-type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string }
+/** The integrate strategy binding an integration keeps: later settings edits never rewrite it. */
+type IntegrationBinding = { strategy: CodingStrategy; effectiveStrategy: EffectiveStrategy; tier: Tier; coding: { def: RoleInput; sup: RoleInput }; profile: string }
+type Integration = { id: string; path: string; target: string; source: string; candidate?: string; conflict: boolean; requiredReview: boolean; review?: Review; resolution?: string; error?: string; delivered?: string } & Partial<IntegrationBinding>
+
+/** Summed token accounting for one task or one run. */
+type UsageTotal = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number; calls: number; unreported: number }
+
+/** One turn whose provider reported no token accounting. */
+const UNREPORTED_USAGE: ReportUsage = { totalTokens: null, inputTokens: null, cachedInputTokens: null, cacheWriteInputTokens: null, outputTokens: null, reasoningOutputTokens: null }
+
+/**
+ * The prompt one bounded consultation child receives. It carries the original
+ * assignment facts, the concrete question and the evidence bound to the
+ * requesting turn, and it forbids taking over the task or writing the main
+ * workspace.
+ * @param signal - the requesting worker's consult report.
+ * @param a - the attempt whose assignment the question belongs to.
+ * @returns the expert's bounded assignment.
+ */
+function consultationPrompt(signal: ConsultSignal, a: Attempt): string {
+  return [
+    `Bounded consultation for ${a.task.id}-A${a.number} (contract revision ${a.task.revision}).`,
+    'Analyze the question below and return a conclusion, its reasons and, when useful, code examples or a proposed patch.',
+    'Do not modify the requesting workspace, apply patches there, take over the task, or create another expert. Write only the artifacts you were assigned.',
+    'If the evidence is insufficient, state the missing fact. If direct implementation is needed, return a bounded coding-assignment recommendation instead of doing it.',
+    '',
+    `Question: ${signal.question}`,
+    `Goal: ${signal.goal}`,
+    `Choices: ${signal.choices}`,
+    `Evidence: ${signal.evidence}`,
+    `Expected conclusion: ${signal.expected}`,
+    '',
+    `The frozen contract is at ${a.contract}; the requesting attempt's assigned workspace is ${a.allocation?.cwd ?? 'unknown'} (read-only for you).`,
+  ].join('\n')
+}
+
+/**
+ * The prompt that returns one expert conclusion to the requesting worker.
+ * @param consult - the recorded consultation.
+ * @param answer - the expert's final reply.
+ * @param stale - whether the attempt's contract was revised after the question was asked.
+ * @returns the continuation prompt for the requesting worker.
+ */
+function consultationReturnPrompt(consult: ConsultRecord, answer: string, stale: boolean): string {
+  return [
+    'Continue the same assignment. A bounded consultation answered the question you submitted; apply the conclusion and verify the result yourself.',
+    'Advice is not acceptance: the conclusion does not change the goal, contract, authority or acceptance, and you still own the implementation and its evidence.',
+    ...(stale ? ['The task contract was revised after this question was asked, so treat the conclusion as historical evidence and re-derive what the current contract needs.'] : []),
+    '',
+    `Question: ${consult.question}`,
+    '',
+    'Consultation conclusion:',
+    answer.trim(),
+    '',
+    'Continue until the assignment is complete or a concrete blocker requires a return. Request a further consultation only for a new, concrete question.',
+  ].join('\n')
+}
+
+/** Every token field one aggregated total sums, in a fixed order. */
+const USAGE_FIELDS = ["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens"] as const
+
+/**
+ * Sum distinct turns' native usage. Each entry is one turn's own accounting, so
+ * repeated observations of the same turn are deduplicated by the caller before
+ * they reach this function; a turn whose provider reported nothing increments
+ * `unreported` instead of contributing zero.
+ * @param entries - one entry per distinct native turn.
+ * @returns the summed total.
+ */
+function aggregateUsage(entries: readonly ReportUsage[]): UsageTotal {
+  const total: UsageTotal = { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, calls: entries.length, unreported: 0 }
+  for (const entry of entries) {
+    let reported = false
+    for (const field of USAGE_FIELDS) {
+      const value = entry[field]
+      if (value === null || value === undefined) continue
+      reported = true
+      total[field] += value
+    }
+    if (!reported) total.unreported += 1
+  }
+  return total
+}
+
+/** The frozen coding binding one attempt keeps for its later phases. */
+type AttemptBinding = { strategy?: CodingStrategy; effectiveStrategy?: EffectiveStrategy; tier?: Tier; phase?: CodingPhase; coding?: { def: RoleInput; sup: RoleInput }; profile?: string;
+  /** The in-thread handoff this attempt performed, if its opening phase requested one. */
+  handoff?: HandoffRecord;
+  /** A control report this attempt submitted that its phase did not authorize. */
+  control?: { turnId: string; signal: string; reason: string };
+  /** Native token accounting by `workerId:turnId`, so repeated snapshots never double-count. */
+  usage?: Record<string, ReportUsage>;
+  /** The raw Outcome the worker's result report declared, kept distinct from processing state. */
+  outcome?: string;
+  /** Bounded consultations this attempt asked for, newest last. */
+  consults?: ConsultRecord[] }
+/** One bounded consultation's durable binding to the attempt that asked for it. */
+type ConsultRecord = { id: string; sourceTurnId: string; question: string; contractRevision: number; evidence: string;
+  state: 'running' | 'answered' | 'delivered'; answerTurnId?: string }
+type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string } & AttemptBinding
 type Lane = { name: string; path: string; owner?: string }
 type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
 export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean }
@@ -63,9 +167,23 @@ export class Workflow {
   private syncLanes() { this.workers.store.read().lanes=[...new Map(this.runs.flatMap(run=>run.lanes).map(lane=>[lane.path,lane])).values()] }
   private async python(...args: string[]) {
     this.workers.assertIdentity()
-    const result=await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(Object.fromEntries(Object.entries(this.workers.selectedRoles()).map(([name, value])=>[name,{model:value.model,model_reasoning_effort:value.reasoningEffort}])))} })
+    const result=await exec('python3',[fileURLToPath(new URL('../scripts/workflowctl.py', import.meta.url)),...args],{maxBuffer:8*1024*1024, env: {...process.env, DSH_ROLE_PROFILES: JSON.stringify(this.roleProfiles())} })
     this.workers.assertIdentity()
     return JSON.parse(result.stdout)
+  }
+  /**
+   * The Role names a contract may bind. Execution roles are the catalog the
+   * dispatch tool can start; the legacy coding keys stay acceptable so already
+   * frozen contracts remain readable, while new coding work must name
+   * `coding_worker`.
+   */
+  private roleProfiles() {
+    const roles=this.workers.selectedRoles()
+    const names=[...ROLES.map(role=>role.name),CODING_CONFIG_KEY.def,CODING_CONFIG_KEY.sup]
+    return Object.fromEntries(names.map(name=>{
+      const value=roles[name===CODING_WORKER?CODING_CONFIG_KEY.def:name]!
+      return [name,{model:value.model,model_reasoning_effort:value.reasoningEffort}]
+    }))
   }
   private async git(cwd: string, ...args: string[]) { this.workers.assertIdentity();const result=await exec('git',['-C',cwd,...args],{maxBuffer:16*1024*1024});this.workers.assertIdentity();return result.stdout.trimEnd() }
   private async commit(repo: string, value: string) {
@@ -99,12 +217,26 @@ export class Workflow {
     } finally {if(existsSync(index))unlinkSync(index)}
   }
   private overlaps(left: string[], right: string[]) { return left.some(a=>right.some(b=>a===b || a.startsWith(b+'/') || b.startsWith(a+'/'))) }
-  private role(_plan: Plan, name: string) {
-    return this.workers.captureRole(name, ROLES.map(role => role.name))
+  /**
+   * Capture one execution for a contract role. Coding assignments always run as
+   * the unified `coding_worker` under the Session's bound strategy; every other
+   * role captures its own Profile configuration key.
+   * @param role - the contract's Role field.
+   * @returns the capture, including the strategy binding and Profile snapshot.
+   */
+  private capture(role: string): Capture {
+    if (role===CODING_CONFIG_KEY.def||role===CODING_CONFIG_KEY.sup) throw new Error(`Legacy coding role ${role} must be revised to Role: ${CODING_WORKER} before dispatch; the bound strategy selects the sup/def configuration`)
+    return role===CODING_WORKER?this.workers.captureCoding('main'):this.workers.captureRole(role,CONFIG_KEYS)
   }
-  private async start(run: Run, id: string, role: ReturnType<WorkflowWorkers['captureRole']>, cwd: string, name: string, text: string, boundary: Boundary, idempotencyKey?: string) {
+  /** Capture one execution from a bound integration snapshot. */
+  private integrationCapture(integration: Integration, role: string, phase: CodingPhase = 'main'): Capture {
+    if (!integration.coding||!integration.profile) throw new Error('Integration has no bound strategy snapshot; refresh it before continuing')
+    const binding=bindIntegrateStrategy(snapshotProfile(integration.coding),integration.strategy,phase)
+    return this.workers.captureSnapshot(role,integration.profile,integration.coding,{requested:binding.requested,effective:binding.effective,tier:binding.tier,phase:binding.phase},binding.prompts)
+  }
+  private async start(run: Run, id: string, role: Capture, cwd: string, name: string, text: string, boundary: Boundary, idempotencyKey?: string) {
     await this.capacity(run)
-    await this.workers.create(run.parent,{id,name,cwd,role:role.role,profile:role.profile,execution:role.execution,managed:true,boundary})
+    await this.workers.create(run.parent,{id,name,cwd,...role,managed:true,boundary})
     const worker = await this.workers.get(run.parent,id)
     if (worker.model!==role.execution.model || worker.effort!==role.execution.reasoningEffort) throw new Error('Runtime model/effort differs from required role; task was not started')
     return this.workers.append(run.parent,id,text,true,idempotencyKey)
@@ -166,7 +298,9 @@ export class Workflow {
   }
   private async review(run: Run, attempt: Attempt, integration?: Integration, disposition=false) {
     await this.capacity(run)
-    const role = this.role(run.plan,'reviewer')
+    // An integration review runs under the strategy bound when that integration
+    // was prepared; an ordinary task review keeps the reviewer configuration.
+    const role = integration===undefined?this.capture('reviewer'):this.integrationCapture(integration,'reviewer')
     const candidate = integration?.candidate ?? attempt.candidate!
     const review: Review = {worker:randomUUID(),candidate,input:attempt.base,...(integration?{target:integration.target}:{}),...(disposition?{purpose:'disposition' as const}:{})}
     if (integration) integration.review = review; else attempt.review = review
@@ -184,11 +318,208 @@ export class Workflow {
     if (!attempt) throw new Error('Unknown task attempt; use status for actual identities')
     return attempt
   }
+  /**
+   * Record the token accounting every native turn of this run reported.
+   *
+   * The key is the native turn, so observing the same worker again adds nothing;
+   * a turn whose provider reported no usage stays counted as unreported rather
+   * than as a zero-cost call.
+   * @param run - the adopted generation.
+   */
+  private async recordUsage(run: Run) {
+    for (const a of run.attempts) {
+      const ids = [a.worker, a.review?.worker, a.integration?.review?.worker, a.integration?.resolution,
+        ...(a.previousReviews ?? []).map(review => review.worker),
+        ...(a.previousIntegrations ?? []).flatMap(integration => integration.review === undefined ? [] : [integration.review.worker])]
+      for (const id of new Set(ids.filter((value): value is string => typeof value === 'string'))) {
+        let worker
+        try { worker = await this.workers.get(run.parent, id) }
+        catch { continue }
+        // The first turn after a handoff is the confirmed boundary between the
+        // opening and continuing phases; it is recorded from native facts and
+        // reflected on the attempt so `status` reports the boundary it observed.
+        if (id === a.worker && worker.handoff !== undefined) {
+          const updated = this.workers.noteHandoffTurn(this.workers.store.read().nativeChildren![id]!, worker.turnId)
+          if (updated?.handoff !== undefined) { this.workers.store.putNativeChild(updated); a.handoff = updated.handoff; this.save() }
+        }
+        for (const report of worker.reports) {
+          // Every completed native turn is counted; one whose provider reported
+          // no usage is recorded as such instead of disappearing from the total.
+          a.usage ??= {}
+          a.usage[`${id}:${report.turnId}`] ??= report.usage ?? UNREPORTED_USAGE
+        }
+      }
+    }
+  }
+
+  /** Summed token accounting for one attempt's distinct native turns. */
+  private attemptUsage(a: Attempt): UsageTotal {
+    return aggregateUsage(Object.values(a.usage ?? {}))
+  }
+
+  /**
+   * Model usage the parent agent itself reported while coordinating this run.
+   *
+   * The parent's own requests are not native child turns, so they are read from
+   * its session log and reported separately rather than folded into a task's
+   * total. Each recorded assistant message is one completed model call.
+   * @param run - the adopted generation.
+   * @returns the parent's coordination usage, or `undefined` when the session is unavailable.
+   */
+  private coordinationUsage(run: Run): UsageTotal | undefined {
+    let session
+    try { session = this.workers.ctx.sessions.get(SessionId(run.parent)) }
+    catch { return undefined }
+    const events = session?.snapshotEvents?.()
+    if (events === undefined) return undefined
+    const entries: ReportUsage[] = events.flatMap(event => {
+      if (event.type !== 'assistant/message' || event.data.usage === undefined) return []
+      const usage = event.data.usage
+      return [{ totalTokens: usage.totalTokens ?? 0, inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cacheReadTokens ?? null, cacheWriteInputTokens: usage.cacheWriteTokens ?? null,
+        outputTokens: usage.outputTokens, reasoningOutputTokens: usage.reasoningTokens ?? null }]
+    })
+    return entries.length === 0 ? undefined : aggregateUsage(entries)
+  }
+
+  /**
+   * Settle every control report the run's live executions submitted.
+   *
+   * The Host performs the authorized action itself: the parent model neither
+   * approves the switch nor reads the whole log. A report the bound phase does
+   * not authorize is recorded on the attempt as a fact for the next decision.
+   * @param run - the adopted generation.
+   */
+  /** Observe native facts for a run: token accounting, handoffs, then consultations. */
+  private async observe(run: Run) {
+    await this.recordUsage(run)
+    await this.settleControls(run)
+    await this.settleConsults(run)
+  }
+
+  /**
+   * Advance every bounded consultation this run's executions asked for.
+   *
+   * A `coding_worker` on an `adaptive` phase or a bootstrap continuation may
+   * request expert judgment. The Host starts one expert child on the Profile's
+   * sup configuration with no write access to the requesting workspace, then
+   * returns the expert's conclusion to the same worker, which still implements
+   * and verifies the result. The expert never accepts the task, and no second
+   * expert is created for the same question.
+   * @param run - the adopted generation.
+   */
+  private async settleConsults(run: Run) {
+    for (const a of run.attempts) {
+      if (['released','delivered','archived'].includes(a.state)) continue
+      const active = (a.consults ?? []).find(consult => consult.state !== 'delivered')
+      if (active !== undefined) { await this.collectConsult(run, a, active); continue }
+      let worker
+      try { worker = await this.workers.get(run.parent, a.worker) }
+      catch { continue }
+      if (worker.state !== 'idle') continue
+      const report = worker.reports.at(-1)
+      if (report === undefined || report.status !== 'completed') continue
+      const signal = parseControlSignal(report.result)
+      if (signal?.kind !== 'consult') continue
+      const binding = worker.strategy
+      const authorized = binding?.effective === 'adaptive'
+        || binding?.effective === 'bootstrap' && binding.phase === 'continuation'
+      if (!authorized) {
+        a.control = { turnId: report.turnId, signal: 'consult',
+          reason: `execution control consult is not authorized for ${binding?.effective ?? 'unbound'} phase ${binding?.phase ?? 'unknown'}` }
+        this.save()
+        continue
+      }
+      if ((a.consults ?? []).some(consult => consult.question === signal.question && consult.sourceTurnId === report.turnId)) continue
+      await this.startConsult(run, a, report.turnId, signal)
+    }
+  }
+
+  /** Start one expert child for a requesting turn and record its binding. */
+  private async startConsult(run: Run, a: Attempt, sourceTurnId: string, signal: ConsultSignal) {
+    if (a.coding === undefined || a.profile === undefined || a.allocation === undefined) throw new Error('Consultation requires the attempt binding snapshot')
+    const id = randomUUID()
+    const consult: ConsultRecord = { id, sourceTurnId, question: signal.question, contractRevision: a.task.revision,
+      evidence: signal.evidence, state: 'running' }
+    a.consults = [...(a.consults ?? []), consult]
+    this.save()
+    try {
+      await this.workers.startConsultation(run.parent, id, {
+        workerId: a.worker, profile: a.profile, coding: a.coding, cwd: a.allocation.cwd,
+        artifacts: this.scoped(run.plan.repository, relative(run.plan.repository, join(run.plan.generation, '.artifacts', `${a.task.id}-A${a.number}`, 'consult', id))),
+        results: this.resultDirectory(run, a), network: a.allocation.network, startKey: `workflow:${run.id}:${a.task.id}:A${a.number}:consult`,
+        prompt: consultationPrompt(signal, a),
+      })
+      this.save()
+    } catch (error) {
+      consult.state = 'delivered'
+      a.control = { turnId: sourceTurnId, signal: 'consult', reason: `the consultation child could not be started: ${String(error)}` }
+      this.save()
+      throw error
+    }
+  }
+
+  /** Return a finished expert's conclusion to the worker that asked for it. */
+  private async collectConsult(run: Run, a: Attempt, consult: ConsultRecord) {
+    let expert
+    try { expert = await this.workers.get(run.parent, consult.id) }
+    catch { return }
+    const report = expert.reports.at(-1)
+    if (consult.state === 'running') {
+      if (expert.state === 'idle' && report !== undefined && report.status === 'completed') {
+        consult.state = 'answered'
+        consult.answerTurnId = report.turnId
+        await this.workers.accept(run.parent, consult.id, report.turnId, 'accepted', true)
+        this.save()
+      } else return
+    }
+    const answer = expert.reports.find(candidate => candidate.turnId === consult.answerTurnId)
+    if (answer === undefined) return
+    // A revised contract makes an older conclusion historical evidence rather
+    // than authority for the current attempt.
+    const stale = consult.contractRevision !== a.task.revision
+    await this.capacity(run)
+    const prompt = consultationReturnPrompt(consult, answer.result, stale)
+    const next = await this.workers.append(run.parent, a.worker, prompt, true, `${consult.id}:return`)
+    consult.state = 'delivered'
+    a.turn = next.turnId ?? undefined
+    a.state = 'running'
+    delete a.candidate
+    this.save()
+  }
+  private async settleControls(run: Run) {
+    for (const a of run.attempts) {
+      if (!['running','unknown','blocked'].includes(a.state)) continue
+      let worker
+      try { worker = await this.workers.get(run.parent, a.worker) }
+      catch { continue }
+      if (worker.state !== 'idle') continue
+      const report = worker.reports.at(-1)
+      if (report === undefined || report.status !== 'completed') continue
+      const signal = parseControlSignal(report.result)
+      if (signal === undefined) continue
+      const outcome = await this.workers.settleControl(run.parent, a.worker, report.turnId)
+      if (outcome.accepted && outcome.handoff !== undefined) {
+        a.handoff = outcome.handoff
+        a.tier = outcome.handoff.target
+        a.phase = 'continuation'
+        a.turn = undefined
+        delete a.control
+        this.save()
+        continue
+      }
+      if (outcome.reason !== undefined) {
+        a.control = { turnId: report.turnId, signal: signal.kind, reason: outcome.reason }
+        this.save()
+      }
+    }
+  }
   private summary(run: Run) {
     const accepted = new Set(run.attempts.filter(a=>!a.discarded&&['accepted','delivered','released'].includes(a.state)&&a.candidate&&a.task.revision===run.plan.tasks[a.task.id]?.revision).map(a=>a.task.id))
     return {id:run.id,generation:run.plan.generation,revision:run.plan.revision,workflowSkillDir:this.skillRoot,file:join(this.directory,'orchestration.json'),
       ready:Object.values(run.plan.tasks).filter(t=>!run.attempts.some(a=>a.task.id===t.id) && t.depends.every(d=>accepted.has(d))).map(t=>t.id),
-      lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
+      routeSupport:this.workers.routeSupport(), usage:aggregateUsage(run.attempts.flatMap(a=>Object.values(a.usage??{}))),
+      coordination:this.coordinationUsage(run), cost:'native token counts only; no billing feed is configured, so no monetary cost is reported', lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,outcome:a.outcome,consults:a.consults,strategy:a.effectiveStrategy??a.strategy,tier:a.tier,phase:a.phase,usage:this.attemptUsage(a),handoff:a.handoff?{requestId:a.handoff.requestId,sourceTurnId:a.handoff.sourceTurnId,target:a.handoff.target,messageId:a.handoff.messageId,targetTurnId:a.handoff.targetTurnId,prompt:a.handoff.prompt}:undefined,control:a.control,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,strategy:a.integration.effectiveStrategy,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
   }
   execute(parent: string, input: WorkflowAction) {
     // ponytail: serialize short control operations; per-repository queues if measured contention requires it.
@@ -237,11 +568,19 @@ export class Workflow {
     }
     if (input.action==='status' && !this.runs.some(r=>r.parent===parent)) return {workflowSkillDir:this.skillRoot,adopted:false}
     const run=this.current(parent)
-    if (input.action==='status') return this.summary(run)
+    if (input.action==='status') { await this.observe(run); return this.summary(run) }
     if (input.action==='dispatch') { await this.dispatch(run,input); return this.summary(run) }
     const a=this.attempt(run,input)
     if (input.action==='record-result') {
       if (!['running','candidate','unknown','blocked'].includes(a.state)) throw new Error(`Task is ${a.state}`)
+      // A control report ends a turn, not the assignment: settle it before
+      // reading a final result. While the latest native report is still the
+      // handoff turn, there is nothing to record as a candidate result.
+      await this.observe(run)
+      if (a.handoff!==undefined) {
+        const latest=await this.workers.get(run.parent,a.worker)
+        if (latest.reports.at(-1)?.turnId===a.handoff.sourceTurnId) return this.summary(run)
+      }
       const report=await this.report(run,a.worker,a.turn)
       if (input.result && !isAbsolute(input.result)) throw new Error('result must be an absolute retained report path')
       const directory=this.resultDirectory(run,a);mkdirSync(directory,{recursive:true,mode:0o700})
@@ -252,6 +591,10 @@ export class Workflow {
       const resultPath=join(submitted,'result.md');writeFileSync(resultPath,content,{mode:0o600})
       const result=await this.python('result-check',resultPath,'--contract',a.contract,'--json')
       if (result.Attempt!==String(a.number) || result['Input snapshot']!==a.base) throw new Error('Result must bind this attempt/input')
+      // The worker's declared outcome is preserved verbatim; the attempt's own
+      // state records what the Host did about it, so `needs-decision` and
+      // `needs-verification` never collapse into one anonymous block.
+      a.outcome=result.Outcome
       if (result.Outcome!=='complete') {
         writeFileSync(retained,content,{mode:0o600});a.result=retained;a.state='blocked';a.turn=report.turnId;this.save();return this.summary(run)
       }
@@ -271,6 +614,7 @@ export class Workflow {
       a.result=retained;a.candidate=candidate;a.state='candidate';a.turn=report.turnId;this.save()
       if (a.task.review==='independent'&&!a.review) await this.review(run,a)
     } else if (input.action==='accept') {
+      await this.observe(run)
       if (a.supersededRevision) throw new Error('Task contract was revised; retain the old result and use the revised attempt')
       if (a.state!=='candidate') throw new Error('Record the candidate first')
       if (a.task.review==='independent' && (!a.review || await this.verdict(run,a.review)!=='passed')) throw new Error('Independent candidate review has not passed')
@@ -301,7 +645,8 @@ export class Workflow {
       await this.capacity(run)
       const id=randomUUID();integration.resolution=id;this.save()
       const artifacts=join(this.artifacts(run,a),'resolution',id);mkdirSync(artifacts,{recursive:true,mode:0o700})
-      await this.start(run,id,this.role(run.plan,a.task.role),integration.path,`resolve ${a.task.id}`,
+      const capture=a.task.role===CODING_WORKER?this.integrationCapture(integration,CODING_WORKER):this.capture(a.task.role)
+      await this.start(run,id,capture,integration.path,`resolve ${a.task.id}`,
         `Resolve only this integration under the reviewer decision: ${integration.review.report}. Read ${a.contract}. Integration target ${integration.target}, source ${integration.source}. Preserve both accepted behaviors, run required checks and commit the merge resolution in this worktree. Return the commit and evidence. Do not change task ownership or target branch.`, {cwd:integration.path,artifacts,results:this.resultDirectory(run,a),writableRoots:[integration.path,artifacts,await this.git(integration.path,'rev-parse','--absolute-git-dir'),await this.git(integration.path,'rev-parse','--path-format=absolute','--git-path','objects')],network:'disabled',ports:{}})
     } else if (input.action==='resolved') {
       const i=a.integration
@@ -351,7 +696,7 @@ export class Workflow {
       const lane=run.lanes.find(l=>l.name===a.lane)
       if (lane) await this.clean(lane.path)
       if (a.integration) await this.clean(a.integration.path)
-      for (const id of [a.worker,a.review?.worker,a.integration?.review?.worker,a.integration?.resolution,...(a.previousReviews??[]).map(r=>r.worker)].filter(Boolean) as string[]) {
+      for (const id of [a.worker,a.review?.worker,a.integration?.review?.worker,a.integration?.resolution,...(a.previousReviews??[]).map(r=>r.worker),...(a.consults??[]).map(consult=>consult.id)].filter(Boolean) as string[]) {
         const w=(await this.workers.list(parent)).find(w=>w.id===id)
         if (!w) continue
         if (w.reports.some(r=>!r.acknowledgedAt)) for (const r of w.reports) await this.workers.acknowledge(parent,id,r.turnId)
@@ -377,7 +722,7 @@ export class Workflow {
     const active=this.runs.filter(r=>r.plan.repository===run.plan.repository).flatMap(r=>r.attempts.filter(a=>a.state!=='released'))
     if (active.some(a=>this.overlaps([...task.owned,...(task.writes??[])],[...a.task.owned,...(a.task.writes??[])])||task.resources.some(r=>a.task.resources.includes(r)))) throw new Error('Owned paths or exclusive resources remain occupied')
     await this.capacity(run)
-    const role=this.role(run.plan,task.role)
+    const role=this.capture(task.role)
     const base=await this.commit(run.plan.repository,input.base??run.plan.base)
     const allowed:string[]=[]
     if (run.plan.policy.bases.includes('plan')) allowed.push(run.plan.base)
@@ -407,8 +752,11 @@ export class Workflow {
     for (const path of reportPaths) mkdirSync(dirname(path),{recursive:true,mode:0o700})
     const worker=randomUUID(), initialStartKey=`workflow:${run.id}:${task.id}:A${number}:initial`
     const contract=join(directory,'contract.md')
-    const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. Task and command cwd ${cwd}. Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'} Return the complete result as Markdown in your final response beginning with exactly these execution-result fields, one per line:\n- Task: ${task.id}\n- Contract revision: ${task.revision}\n- Attempt: ${number}\n- Input snapshot: ${base}\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>\nInclude verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
-    const a:Attempt={task:structuredClone(task),number,worker,initialPrompt,initialStartKey,lane:lane?.name,allocation,base,contract,directory,state:'reserved'}
+    const bound=role.strategy===undefined?'':`\nBound execution strategy: ${role.strategy.effective} (requested ${role.strategy.requested}); phase ${role.strategy.phase}; model configuration tier ${role.strategy.tier}. The Host decides any tier handoff or expert consultation; do not switch models, create a successor or infer switching authority from this line.`
+    const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. Task and command cwd ${cwd}. Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'}${bound} Return the complete result as Markdown in your final response beginning with exactly these execution-result fields, one per line:\n- Task: ${task.id}\n- Contract revision: ${task.revision}\n- Attempt: ${number}\n- Input snapshot: ${base}\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>\nInclude verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
+    const a:Attempt={task:structuredClone(task),number,worker,initialPrompt,initialStartKey,lane:lane?.name,allocation,base,contract,directory,state:'reserved',
+      ...(role.strategy===undefined?{}:{strategy:role.strategy.requested,effectiveStrategy:role.strategy.effective,tier:role.strategy.tier,phase:role.strategy.phase}),
+      ...(role.coding===undefined?{}:{coding:structuredClone(role.coding)}),...(role.profile?{profile:role.profile}:{})}
     writeFileSync(a.contract,task.text,{mode:0o600});writeFileSync(join(directory,'plan.md'),run.plan.text,{mode:0o600})
     if (lane) lane.owner=`${task.id}-A${number}`;run.attempts.push(a);this.save()
     try {
@@ -467,7 +815,13 @@ export class Workflow {
     if (i&&i.target!==target) throw new Error('Target advanced since integration preparation; use refresh-integration after retaining the old review')
     if (!i) {
       const overlap=this.overlaps(await this.paths(repo,a.base,a.candidate),await this.paths(repo,a.base,target))
-      const id=randomUUID();i={id,path:join(dirname(run.plan.generation),'.integration',id),target,source:a.candidate,conflict:false,requiredReview:overlap};a.integration=i;this.save()
+      // An integration binds the integrate strategy and the Profile snapshot it
+      // was prepared with. Later strategy or Profile edits never rewrite it; a
+      // refreshed integration binds the then-current settings instead.
+      const profile=this.workers.selectedProfileId()
+      const binding=bindIntegrateStrategy(this.workers.configuration.profile(profile),this.workers.configuration.strategies().integrate,'main')
+      const id=randomUUID();i={id,path:join(dirname(run.plan.generation),'.integration',id),target,source:a.candidate,conflict:false,requiredReview:overlap,
+        strategy:binding.requested,effectiveStrategy:binding.effective,tier:binding.tier,coding:this.workers.configuration.codingSnapshot(profile),profile};a.integration=i;this.save()
       await this.git(repo,'worktree','add','--detach',i.path,target)
       try {await this.git(i.path,'merge','--no-ff','--no-edit',a.candidate)} catch(e) {
         if (!(await this.git(i.path,'ls-files','-u'))) {i.error=String(e);this.save();throw e}

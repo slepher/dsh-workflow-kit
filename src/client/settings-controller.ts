@@ -11,6 +11,7 @@ import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client
 import type { SettingsPathOpView } from "@deepseek-ai/dsh-api-remotes/client";
 import type { SettingsScope } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type { ConfigView, WorkflowSettingsSection } from "../profile-types.js";
+import { DEFAULT_CODING_STRATEGY, DEFAULT_INTEGRATE_STRATEGY, type CodingStrategy } from "../constants.js";
 import { loadModelOptions, type ModelGroup } from "./model-catalog.js";
 import type { WorkflowRpc } from "./rpc.js";
 
@@ -30,6 +31,10 @@ export interface WorkflowSettingsState {
   roleNames: readonly string[];
   /** Configuration a new Session selects when it records none. */
   defaultConfig: string | null;
+  /** Stored coding default; a Session may override it in the composer. */
+  codingStrategy: CodingStrategy;
+  /** Stored integrate default; integration work uses it directly. */
+  integrateStrategy: CodingStrategy;
   /** Adapter-advertised provider groups the role editors offer. */
   groups: readonly ModelGroup[];
   /** Model catalog lifecycle. */
@@ -39,6 +44,9 @@ export interface WorkflowSettingsState {
   /** Whether any provider failed to load in the last catalog read. */
   catalogPartial: boolean;
 }
+
+/** Which stored strategy one write edits. */
+export type StrategyKind = "coding" | "integrate";
 
 /** One role's stored override value. */
 export type RoleDraft = { provider: string; model: string; reasoningEffort: string };
@@ -53,6 +61,7 @@ export class WorkflowSettingsController {
   readonly store: SnapshotStore<WorkflowSettingsState> = createSnapshotStore<WorkflowSettingsState>({
     status: "loading", writable: false, saving: false, error: null,
     configs: [], roleNames: [], defaultConfig: null,
+    codingStrategy: DEFAULT_CODING_STRATEGY, integrateStrategy: DEFAULT_INTEGRATE_STRATEGY,
     groups: [], catalog: "idle", catalogError: null, catalogPartial: false,
   });
 
@@ -106,10 +115,22 @@ export class WorkflowSettingsController {
       this.publish({
         status: "ready", writable: snapshot.writable, error: null,
         configs: catalog.configs, roleNames: catalog.roleNames, defaultConfig: catalog.defaultConfig,
+        codingStrategy: catalog.strategies.coding, integrateStrategy: catalog.strategies.integrate,
       });
     } catch (error) {
       this.publish({ status: "error", writable: snapshot.writable, error: messageOf(error) });
     }
+  }
+
+  /**
+   * Store one strategy default. Coding and integrate are written to separate
+   * paths, so neither write can overwrite the other.
+   * @param kind - which strategy default to store.
+   * @param value - the selected strategy.
+   * @returns settlement after the write and its recovery read.
+   */
+  setStrategy(kind: StrategyKind, value: CodingStrategy): Promise<void> {
+    return this.mutate([{ op: "set", path: [kind === "coding" ? "codingStrategy" : "integrateStrategy"], value }]);
   }
 
   /**

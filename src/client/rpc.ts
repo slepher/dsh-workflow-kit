@@ -1,14 +1,17 @@
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
+import type { CodingStrategy } from "../constants.js";
 import type { ConfigurationsView, ProfileAction, ProfileView } from "../profile-types.js";
 
 /** Browser calls this plugin makes on its own `/workflow` channel. */
 export interface WorkflowRpc {
   /** Read every effective configuration; requires no Session. */
   configurations(signal?: AbortSignal): Promise<ConfigurationsView>;
-  /** Read the catalog plus one native Session's recorded selection. */
+  /** Read the catalog plus one native Session's recorded selection and strategy facts. */
   profiles(sessionId: string, signal?: AbortSignal): Promise<ProfileView>;
   /** Record one configuration as that native Session's selection. */
   selectProfile(sessionId: string, profileId: string, signal?: AbortSignal): Promise<ProfileView>;
+  /** Record or clear that native Session's coding-strategy override. */
+  selectStrategy(sessionId: string, strategy: CodingStrategy | null, signal?: AbortSignal): Promise<ProfileView>;
 }
 
 /**
@@ -27,5 +30,7 @@ export function createWorkflowRpc(connection: ConnectionHandle): WorkflowRpc {
     profiles: (sessionId, signal) => call<ProfileView>("profiles", { sessionId }, signal),
     selectProfile: (sessionId, profileId, signal) =>
       call<ProfileView>("select-profile", { sessionId, profileId }, signal),
+    selectStrategy: (sessionId, strategy, signal) =>
+      call<ProfileView>("select-strategy", { sessionId, strategy }, signal),
   };
 }

@@ -1,7 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import type { Effort } from "./types.js";
-import { ROLES, resolveRole } from "./roles.js";
+import { CONFIG_KEYS, configDefault, resolveRole } from "./roles.js";
 import { SETTINGS_EFFORTS } from "./settings.js";
+import { CODING_CONFIG_KEY } from "./constants.js";
+import { DEFAULT_CODING_STRATEGY, DEFAULT_INTEGRATE_STRATEGY, isStrategy, type CodingStrategy } from "./constants.js";
+import { sameModel, type Tier } from "./strategy.js";
 import type { WorkflowSettingsSection } from "./profile-types.js";
 
 const ID = /^[a-z0-9][a-z0-9_-]*$/;
@@ -14,8 +17,20 @@ export interface Profile { roles: Record<string, RoleInput> }
 /** The catalog layer shipped inside this package, keyed by configuration id. */
 export type BuiltinProfiles = Record<string, Profile>;
 
-/** Composes one role's developer instructions for this deployment. */
-export type RoleInstructions = (role: string) => string;
+/**
+ * Composes one execution role's developer instructions for this deployment.
+ * `skills` carries the phase prompts the bound strategy adds for this
+ * execution; they are appended after the role's own long-lived responsibilities.
+ */
+export type RoleInstructions = (role: string, skills?: readonly string[]) => string;
+
+/** How one capture selects its model configuration. */
+export interface CaptureOptions {
+  /** Profile configuration key supplying provider/model/effort; defaults to the execution role name. */
+  configKey?: string;
+  /** Phase prompt skills appended after the role's own. */
+  skills?: readonly string[];
+}
 
 /** Directory of the configurations this package ships. */
 const SHIPPED_DIRECTORY = new URL("../profiles/", import.meta.url);
@@ -63,18 +78,22 @@ export function parseProfile(value: unknown): Profile {
 
 /** Compose the deployment's role-instruction resolver from its installed skills. */
 export function roleInstructions(workflowSkillDir?: string, implementationStandardDir?: string): RoleInstructions {
-  return role => resolveRole(role, workflowSkillDir, implementationStandardDir).developerInstructions;
+  return (role, skills = []) => resolveRole(role, workflowSkillDir, implementationStandardDir, skills).developerInstructions;
 }
 
 /**
- * The effective configuration catalog. The role set is fixed by the shipped
- * role catalog; each role resolves through the stored user override, then the
- * shipped configuration, then the shipped role default. Captured execution
- * inputs survive later reloads of the stored layer.
+ * The effective configuration catalog. The configuration keys are fixed by the
+ * shipped key catalog; each key resolves through the stored user override, then
+ * the shipped configuration, then the shipped key default. Captured execution
+ * inputs survive later reloads of the stored layer. The stored strategy
+ * defaults live here too, because they decide which key a coding execution
+ * captures.
  */
 export class WorkflowConfiguration {
   private user: WorkflowSettingsSection["configs"] = Object.create(null);
   private profiles = new Map<string, Profile>();
+  private coding: CodingStrategy = DEFAULT_CODING_STRATEGY;
+  private integrate: CodingStrategy = DEFAULT_INTEGRATE_STRATEGY;
 
   /**
    * @param builtin - the package's shipped configurations.
@@ -86,7 +105,7 @@ export class WorkflowConfiguration {
 
   /**
    * Replace the stored user layer.
-   * @param configs - stored per-configuration role overrides; unknown ids and roles are ignored.
+   * @param configs - stored per-configuration role overrides; unknown ids and keys are ignored.
    */
   setUserConfigs(configs: WorkflowSettingsSection["configs"]): void {
     const next: WorkflowSettingsSection["configs"] = Object.create(null);
@@ -94,7 +113,7 @@ export class WorkflowConfiguration {
       if (!ID.test(id)) continue;
       const roles: Record<string, RoleInput> = Object.create(null);
       for (const [name, row] of Object.entries(config.roles)) {
-        if (!ROLES.some(role => role.name === name)) continue;
+        if (!CONFIG_KEYS.includes(name)) continue;
         // The settings schema already restricts this field to the effort union.
         roles[name] = { provider: row.provider, model: row.model, reasoningEffort: row.reasoningEffort as Effort };
       }
@@ -104,18 +123,36 @@ export class WorkflowConfiguration {
     this.merge();
   }
 
-  /** Recompute every configuration: stored override, then shipped file, then shipped role default. */
+  /**
+   * Replace the stored strategy defaults. Unknown values keep the shipped default.
+   * @param value - the stored coding and integrate defaults.
+   */
+  setUserStrategies(value: { codingStrategy?: unknown; integrateStrategy?: unknown }): void {
+    this.coding = isStrategy(value.codingStrategy) ? value.codingStrategy : DEFAULT_CODING_STRATEGY;
+    this.integrate = isStrategy(value.integrateStrategy) ? value.integrateStrategy : DEFAULT_INTEGRATE_STRATEGY;
+  }
+
+  /** The stored strategy defaults a Session without an override inherits. */
+  strategies(): { coding: CodingStrategy; integrate: CodingStrategy } {
+    return { coding: this.coding, integrate: this.integrate };
+  }
+
+  /** One effective Profile, for strategy resolution and snapshot capture. */
+  profile(id: string | undefined): Profile | undefined {
+    return id === undefined ? undefined : this.profiles.get(id);
+  }
+
+  /** Recompute every configuration: stored override, then shipped file, then shipped key default. */
   private merge(): void {
     const ids = new Set([...Object.keys(this.builtin), ...Object.keys(this.user)]);
     const profiles = new Map<string, Profile>();
     for (const id of [...ids].sort()) {
       const shipped = this.builtin[id], overrides = this.user[id]?.roles;
       const roles: Record<string, RoleInput> = Object.create(null);
-      for (const role of ROLES) {
+      for (const key of CONFIG_KEYS) {
         // Both layers are validated where they enter: the shipped parser and the settings schema.
-        const resolved = overrides?.[role.name] ?? shipped?.roles[role.name]
-          ?? { provider: role.provider, model: role.model, reasoningEffort: role.effort };
-        roles[role.name] = {
+        const resolved = overrides?.[key] ?? shipped?.roles[key] ?? configDefault(key);
+        roles[key] = {
           provider: resolved.provider, model: resolved.model, reasoningEffort: resolved.reasoningEffort as Effort,
         };
       }
@@ -129,23 +166,61 @@ export class WorkflowConfiguration {
       configs: [...this.profiles].map(([id, profile]) => ({
         id,
         builtin: Object.hasOwn(this.builtin, id),
+        sameModel: sameModel(profile),
         roles: Object.fromEntries(Object.entries(profile.roles).map(([name, row]) => [name, {
           ...row,
           overridden: this.user[id]?.roles[name] !== undefined,
         }])),
-        missingRequiredRoles: ROLES.filter(role => !Object.hasOwn(profile.roles, role.name)).map(role => role.name),
+        missingRequiredRoles: CONFIG_KEYS.filter(key => !Object.hasOwn(profile.roles, key)),
       })),
-      roleNames: ROLES.map(role => role.name),
+      roleNames: [...CONFIG_KEYS],
+      codingKeys: { ...CODING_CONFIG_KEY },
+      strategies: this.strategies(),
     };
   }
 
-  capture(profileId: string | undefined, role: string, requiredRoles: readonly string[] = []): RoleExecution {
+  /**
+   * Capture one execution's configuration inputs.
+   * @param profileId - the bound Profile.
+   * @param role - the execution role owning the responsibility and permissions.
+   * @param requiredKeys - Profile configuration keys this execution depends on.
+   * @param options - model configuration key and phase prompts for this execution.
+   * @returns the captured execution inputs.
+   */
+  capture(profileId: string | undefined, role: string, requiredKeys: readonly string[] = [], options: CaptureOptions = {}): RoleExecution {
     if (profileId === undefined) throw new Error("No workflow profile selected");
     const profile = this.profiles.get(profileId);
     if (profile === undefined) throw new Error(`Selected workflow profile is unavailable: ${profileId}`);
-    const missing = [...new Set([...requiredRoles, role])].filter(id => !Object.hasOwn(profile.roles, id));
+    const key = options.configKey ?? role;
+    const missing = [...new Set([...requiredKeys, key])].filter(id => !Object.hasOwn(profile.roles, id));
     if (missing.length) throw new Error(`Profile ${profileId} lacks required roles: ${missing.join(", ")}`);
-    return { ...profile.roles[role], developerInstructions: this.instructions(role) };
+    return { ...profile.roles[key], developerInstructions: this.instructions(role, options.skills ?? []) };
+  }
+
+  /**
+   * Capture one execution from a bound Profile snapshot instead of the live
+   * catalog. A dispatched execution keeps the model configuration recorded at
+   * its dispatch; editing the Profile or switching Profiles never rewrites it.
+   * @param role - execution role owning the responsibility and permissions.
+   * @param snapshot - the sup/def configuration snapshot captured at binding time.
+   * @param tier - configuration tier the bound phase runs on.
+   * @param skills - phase prompt skills appended after the role's own.
+   * @returns the captured execution inputs.
+   */
+  captureSnapshot(role: string, snapshot: { def: RoleInput; sup: RoleInput }, tier: Tier, skills: readonly string[] = []): RoleExecution {
+    return { ...snapshot[tier], developerInstructions: this.instructions(role, skills) };
+  }
+
+  /**
+   * Capture the bound Profile's coding model configurations.
+   * @param profileId - the bound Profile.
+   * @returns the sup/def snapshot a dispatched execution keeps for its later phases.
+   */
+  codingSnapshot(profileId: string | undefined): { def: RoleInput; sup: RoleInput } {
+    if (profileId === undefined) throw new Error("No workflow profile selected");
+    const profile = this.profiles.get(profileId);
+    if (profile === undefined) throw new Error(`Selected workflow profile is unavailable: ${profileId}`);
+    return { def: { ...profile.roles[CODING_CONFIG_KEY.def] }, sup: { ...profile.roles[CODING_CONFIG_KEY.sup] } };
   }
 }
 

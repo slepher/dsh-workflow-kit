@@ -89,7 +89,22 @@ test("workflow profile channel mounts on the real fiber and answers carrier requ
   assert.equal(configurations.json.result.ok, true);
   assert.equal(configurations.json.result.value.defaultConfig, "a");
   assert.equal(configurations.json.result.value.roleNames.length, 7);
+  assert.deepEqual(configurations.json.result.value.strategies, { coding: "adaptive", integrate: "economy" });
   assert.equal((await call(route, envelope("configurations", { sessionId: "parent" }))).json.result.ok, false);
+
+  // Session coding strategy: an override is recorded per Session, and clearing
+  // it restores the stored default without touching the integrate setting.
+  const strategy = await call(route, envelope("select-strategy", { sessionId: "parent", strategy: "expert" }));
+  assert.deepEqual(strategy.json.result.value.strategy,
+    { preference: "expert", default: "adaptive", effective: "independent", sameModel: false, fixed: false });
+  assert.equal(f.store.strategyPreference("parent"), "expert");
+  assert.deepEqual(f.configuration.strategies(), { coding: "adaptive", integrate: "economy" }, "a Session override never rewrites the stored defaults");
+  assert.equal((await call(route, envelope("select-strategy", { sessionId: "parent", strategy: "turbo" }))).json.result.ok, false);
+  assert.equal((await call(route, envelope("select-strategy", { sessionId: "parent" }))).json.result.ok, false, "the strategy field is required");
+  const cleared = await call(route, envelope("select-strategy", { sessionId: "parent", strategy: null }));
+  assert.equal(cleared.json.result.value.strategy.preference, null);
+  assert.equal(cleared.json.result.value.strategy.effective, "adaptive");
+  assert.equal(f.store.strategyPreference("parent"), undefined);
 
   const selected = await call(route, envelope("select-profile", { sessionId: "parent", profileId: "b" }));
   assert.equal(selected.json.result.value.selectedProfile, "b");

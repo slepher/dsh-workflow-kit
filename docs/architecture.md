@@ -1,5 +1,9 @@
 # dsh-workflow-kit boundaries
 
+Historical architecture snapshot. Use [README](../README.md) for current runtime
+boundaries and [upgrade.md](../upgrade.md) for the proposed upgrade. The backend
+split and full worker UI below are historical, not instructions to restore them.
+
 `dsh-workflow-kit` depends only on public exports from the adjacent
 `dsh-codex-kit-backend` package. It does not import `dsh-codex-kit` client or
 internal backend source.

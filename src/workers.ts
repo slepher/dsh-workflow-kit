@@ -4,15 +4,137 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-subagent";
-import { queueHostSubagentPrompt, steerHostSubagentPrompt } from "@deepseek-ai/dsh-subagent/internal";
-import type { NativeExecutionReport } from "dsh-codex-app-provider";
+import * as subagentInternal from "@deepseek-ai/dsh-subagent/internal";
+import type { NativeExecution, NativeExecutionReport } from "dsh-codex-app-provider";
 import type {} from "dsh-codex-app-provider";
 import type { WorkflowStore } from "./store.js";
-import type { WorkflowConfiguration, RoleExecution } from "./configuration.js";
+import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
 import type { Boundary } from "./types.js";
+import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
+import { bindCodingStrategy, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
+import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
+
+const { queueHostSubagentPrompt, steerHostSubagentPrompt } = subagentInternal;
+
+/**
+ * The route-carrying continuation adapter, present only when the installed
+ * subagent package implements it. Reading it through the namespace keeps this
+ * plugin loadable against a package set that predates the capability; the
+ * Host then reports the route as unsupported instead of silently running the
+ * old configuration.
+ */
+const continueWithRoute: ContinueWithRoute | undefined =
+  (subagentInternal as unknown as { continueHostSubagentPrompt?: ContinueWithRoute }).continueHostSubagentPrompt;
+
+/**
+ * Native execution facts this Host reads. The confirmed model/effort and the
+ * pending target describe a configuration switch in flight; a package set that
+ * predates the field simply reports no pending target.
+ */
+type NativeFacts = NativeExecution & { pending?: { model?: string; reasoningEffort?: string } };
+
+/** The provider whose native execution the `codexExecution` reader projects. */
+const NATIVE_EXECUTION_PROVIDER = "codex";
+
+/** One model-visible turn the DSH session itself recorded, for a non-native provider. */
+interface SessionTurn {
+  turnId: string;
+  status: "completed" | "failed" | "interrupted";
+  result: string;
+  /** Session producing the turn; the child owns it, so it identifies the execution. */
+  threadId: string;
+  /** Epoch milliseconds of the turn's closing event. */
+  createdAt: number;
+}
+
+/** Signature of the route-carrying continuation adapter. */
+export type ContinueWithRoute = (
+  runtime: Context["subagents"],
+  parent: Agent,
+  childId: SessionId,
+  content: { type: "text"; text: string }[],
+  source: { kind: "user" },
+  signal: AbortSignal,
+  route: { provider?: string; model?: string; reasoningEffort?: string },
+) => Promise<string>;
 
 export type ReportAcceptance = "pending" | "accepted" | "changes-requested";
-export type Report = NativeExecutionReport & { workerId: string; acceptance: ReportAcceptance; acknowledgedAt?: number };
+
+/**
+ * One turn's token accounting as the native provider reported it. A field is
+ * `null` when the provider did not report it, which stays distinct from a
+ * reported zero.
+ */
+export interface ReportUsage {
+  totalTokens: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+}
+
+export type Report = NativeExecutionReport & { workerId: string; acceptance: ReportAcceptance; acknowledgedAt?: number;
+  /** Usage the provider attributed to this turn; absent when it reported none. */
+  usage?: ReportUsage };
+
+/** The strategy an execution was dispatched under, kept for its later phases. */
+export interface BoundStrategy {
+  requested: CodingStrategy;
+  effective: EffectiveStrategy;
+  tier: Tier;
+  phase: CodingPhase;
+}
+
+/** One execution capture: the execution role plus the Profile configuration its bound strategy chose. */
+export interface Capture {
+  role: string;
+  profile: string;
+  execution: RoleExecution;
+  strategy?: BoundStrategy;
+  coding?: { def: RoleInput; sup: RoleInput };
+}
+
+/**
+ * One bounded consultation the Host runs for a worker that asked for expert
+ * judgment. The expert child uses the sup configuration and cannot write the
+ * main workspace; its conclusion returns to the requesting worker, which still
+ * implements and verifies the result.
+ */
+export interface ConsultationRequest {
+  /** Worker whose completed turn asked the question. */
+  workerId: string;
+  /** Profile configuration snapshot the requesting worker is bound to. */
+  profile: string;
+  coding: { def: RoleInput; sup: RoleInput };
+  /** Workspace the expert may read but not modify. */
+  cwd: string;
+  artifacts: string;
+  results: string;
+  network: Boundary["network"];
+  /** The bounded consultation prompt. */
+  prompt: string;
+  /** Idempotency key for the expert's first prompt. */
+  startKey: string;
+}
+
+/** One recorded in-thread handoff from an opening phase to the continuing tier. */
+export interface HandoffRecord {
+  /** Idempotency key of the continuation this handoff delivered. */
+  requestId: string;
+  /** Completed turn whose control report requested the handoff. */
+  sourceTurnId: string;
+  /** Tier the worker continues on. */
+  target: Tier;
+  /** Native message id the continuation was admitted as. */
+  messageId: string;
+  /** The continuation prompt bound to the switch, kept for audit. */
+  prompt: string;
+  /** First turn observed after the switch, once the native execution reports one. */
+  targetTurnId?: string;
+  at: number;
+}
+
 export interface NativeChildRecord {
   id: string;
   parentSessionId: string;
@@ -21,6 +143,12 @@ export interface NativeChildRecord {
   profile: string;
   execution: RoleExecution;
   boundary: Boundary;
+  /** Coding/integrate strategy binding; absent on records dispatched before strategies existed. */
+  strategy?: BoundStrategy;
+  /** Sup/def Profile snapshot captured at dispatch; later Profile or setting edits never rewrite it. */
+  coding?: { def: RoleInput; sup: RoleInput };
+  /** The one handoff this execution performed, if its opening phase requested one. */
+  handoff?: HandoffRecord;
   closed?: boolean;
   dispatches: { key: string; text: string; phase: "pending" | "accepted"; previousTurnId?: string; messageId?: string }[];
   acceptance: Record<string, { value: ReportAcceptance; acknowledgedAt?: number }>;
@@ -36,8 +164,22 @@ export interface WorkerProjection {
   effort: string;
   threadId?: string;
   turnId?: string;
+  strategy?: BoundStrategy;
+  /** Authorized route target the native execution has not confirmed yet. */
+  pending?: { model?: string; reasoningEffort?: string };
+  handoff?: HandoffRecord;
   state: "idle" | "running" | "waiting-approval" | "interrupt-requested" | "unknown";
   reports: readonly Report[];
+}
+
+/** The outcome of asking the Host to settle one execution's control report. */
+export interface ControlOutcome {
+  /** Whether this call performed the action; `false` means the report carried no such signal. */
+  accepted: boolean;
+  /** Why the control report was not acted on, when the phase authorized one. */
+  reason?: string;
+  signal?: ControlSignal;
+  handoff?: HandoffRecord;
 }
 
 /** Workflow owns authorization and acceptance; native children and Codex own execution facts. */
@@ -45,7 +187,9 @@ export class WorkflowWorkers {
   private readonly request = new AsyncLocalStorage<{ parent: Agent; session: Agent["session"]; signal: AbortSignal }>();
 
   constructor(readonly ctx: Context, readonly store: WorkflowStore, readonly configuration: WorkflowConfiguration,
-    readonly defaultProfile?: () => string | undefined, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string) {}
+    readonly defaultProfile?: () => string | undefined, readonly workflowSkillDir?: string, readonly implementationStandardDir?: string,
+    /** Route-carrying continuation adapter; defaults to the installed package's capability. */
+    readonly routeAdapter: ContinueWithRoute | undefined = continueWithRoute) {}
 
   run<T>(parent: Agent, signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
     return Promise.resolve(this.request.run({ parent, session: parent.session, signal }, () => { this.assertIdentity(); return operation(); }));
@@ -57,10 +201,94 @@ export class WorkflowWorkers {
       || value.parent.session !== value.session) throw new Error("Parent agent identity changed");
   }
 
-  captureRole(role: string, requiredRoles: readonly string[] = []) {
+  /** The Profile this Session currently selects; the stored default applies until a Session records one. */
+  selectedProfileId(): string {
     this.assertIdentity();
     const profile = this.store.selectedProfile(String(this.context().session.id), this.defaultProfile?.());
-    return { role, profile: profile!, execution: this.configuration.capture(profile, role, requiredRoles) };
+    if (profile === undefined) throw new Error("No workflow profile selected");
+    return profile;
+  }
+
+  /** The coding preference this Session dispatches under, plus the stored default behind it. */
+  codingStrategy(): { requested: CodingStrategy; preference: CodingStrategy | undefined } {
+    this.assertIdentity();
+    const preference = this.store.strategyPreference(String(this.context().session.id)) as CodingStrategy | undefined;
+    return { requested: preference ?? this.configuration.strategies().coding, preference };
+  }
+
+  captureRole(role: string, requiredKeys: readonly string[] = [], options: CaptureOptions = {}): Capture {
+    this.assertIdentity();
+    const profile = this.selectedProfileId();
+    return { role, profile, execution: this.configuration.capture(profile, role, requiredKeys, options) };
+  }
+
+  /**
+   * Capture one unified `coding_worker` execution for this Session.
+   * @param phase - the phase the Host binds for this execution.
+   * @returns the capture, including the strategy binding and Profile snapshot.
+   */
+  captureCoding(phase: CodingPhase = "main"): Capture {
+    const { requested } = this.codingStrategy();
+    return this.codingCapture(this.selectedProfileId(), requested, phase);
+  }
+
+  /**
+   * Capture one coding execution against an explicit Profile and strategy.
+   * Integration phases use this instead of the Session's coding preference.
+   * @param profile - bound Profile id.
+   * @param requested - bound strategy.
+   * @param phase - bound phase.
+   * @returns the capture.
+   */
+  codingCapture(profile: string, requested: CodingStrategy, phase: CodingPhase = "main"): Capture {
+    const binding = bindCodingStrategy(this.configuration.profile(profile), requested, phase);
+    return {
+      role: CODING_WORKER,
+      profile,
+      execution: this.configuration.capture(profile, CODING_WORKER, CONFIG_KEYS, { configKey: tierConfigKey(binding.tier), skills: binding.prompts }),
+      strategy: boundStrategy(binding),
+      coding: this.configuration.codingSnapshot(profile),
+    };
+  }
+
+  /**
+   * Capture one non-coding role under a bound strategy tier. Integration review
+   * and repair keep their own role and permissions while the integrate strategy
+   * chooses the model configuration.
+   * @param role - execution role owning the responsibility.
+   * @param profile - bound Profile id.
+   * @param binding - bound strategy.
+   * @returns the capture.
+   */
+  captureBound(role: string, profile: string, binding: StrategyBinding): Capture {
+    return {
+      role,
+      profile,
+      execution: this.configuration.capture(profile, role, CONFIG_KEYS, { configKey: tierConfigKey(binding.tier), skills: binding.prompts }),
+      strategy: boundStrategy(binding),
+      coding: this.configuration.codingSnapshot(profile),
+    };
+  }
+
+  /**
+   * Capture one execution from a bound Profile snapshot instead of the live
+   * catalog. Bound integrations and later execution phases keep the model
+   * configuration recorded when they were bound.
+   * @param role - execution role owning the responsibility.
+   * @param profile - Profile id the snapshot came from, kept for the record.
+   * @param snapshot - sup/def configuration snapshot.
+   * @param strategy - the binding this phase runs under.
+   * @param skills - phase prompt skills appended after the role's own.
+   * @returns the capture.
+   */
+  captureSnapshot(role: string, profile: string, snapshot: { def: RoleInput; sup: RoleInput }, strategy: BoundStrategy, skills: readonly string[] = []): Capture {
+    return {
+      role,
+      profile,
+      execution: this.configuration.captureSnapshot(role, snapshot, strategy.tier, skills),
+      strategy: structuredClone(strategy),
+      coding: structuredClone(snapshot),
+    };
   }
 
   selectedRoles() {
@@ -72,7 +300,7 @@ export class WorkflowWorkers {
     return profile.roles;
   }
 
-  async create(parentId: string, input: { id?: string; name: string; cwd: string; role: string; profile: string; execution: RoleExecution; managed?: boolean; boundary: Boundary }): Promise<WorkerProjection> {
+  async create(parentId: string, input: Capture & { id?: string; name: string; cwd: string; managed?: boolean; boundary: Boundary }): Promise<WorkerProjection> {
     this.parent(parentId); this.managed(input.managed);
     if (!input.id || input.boundary.cwd !== input.cwd) throw new Error("Managed child requires a stable identity and matching workspace");
     const previous = this.store.read().nativeChildren?.[input.id];
@@ -82,7 +310,9 @@ export class WorkflowWorkers {
       return this.get(parentId, input.id);
     }
     this.store.putNativeChild({ id: input.id, parentSessionId: parentId, name: input.name, role: input.role, profile: input.profile,
-      execution: structuredClone(input.execution), boundary: structuredClone(input.boundary), dispatches: [], acceptance: {} });
+      execution: structuredClone(input.execution), boundary: structuredClone(input.boundary), dispatches: [], acceptance: {},
+      ...(input.strategy === undefined ? {} : { strategy: structuredClone(input.strategy) }),
+      ...(input.coding === undefined ? {} : { coding: structuredClone(input.coding) }) });
     return this.get(parentId, input.id);
   }
 
@@ -93,25 +323,224 @@ export class WorkflowWorkers {
 
   async get(parentId: string, id: string): Promise<WorkerProjection> {
     const record = this.record(parentId, id);
-    const facts = await this.ctx.codexExecution.read(id);
+    const facts = await this.ctx.codexExecution.read(id) as NativeFacts | undefined;
     this.assertIdentity();
     const active = this.ctx.agents.get(SessionId(id));
     if (active !== undefined && String(active.session.header.parentSession) !== parentId) throw new Error("Native child parent identity mismatch");
+    // A bound execution compares native facts against the configuration its
+    // current phase runs on, and treats an authorized switch in flight as
+    // pending rather than as an unknown execution.
+    const bound = this.boundInput(record);
+    // A child that continues under another adapter has no native record there:
+    // its turns are read from the DSH session the child still owns, so
+    // completion never depends on a foreign thread identity.
+    const native = bound.provider === NATIVE_EXECUTION_PROVIDER
+      ? await this.ctx.codexExecution.read(id) as NativeFacts | undefined
+      : undefined;
+    const sessionTurns = bound.provider === NATIVE_EXECUTION_PROVIDER ? undefined : this.sessionTurns(id);
+    const switching = native?.pending !== undefined;
     let state: WorkerProjection["state"];
-    if (facts === undefined) state = record.dispatches.length === 0 ? "idle" : active === undefined ? "unknown" : "running";
-    else if (facts.cwd !== record.boundary.cwd || facts.model !== record.execution.model || facts.reasoningEffort !== record.execution.reasoningEffort) state = "unknown";
-    else if (facts.state === "unknown" || facts.state === "saved") state = "unknown";
-    else if (facts.state === "waiting-approval" || facts.state === "interrupt-requested") state = facts.state;
-    else if (facts.state === "running" || facts.state === "starting" || active?.status === "running") state = "running";
-    else state = facts.state === "idle" ? "idle" : "unknown";
+    if (sessionTurns !== undefined) {
+      state = active?.status === "running" || active === undefined && sessionTurns.length === 0 && record.dispatches.length > 0
+        ? "running" : "idle";
+      if (active === undefined && sessionTurns.length === 0 && record.dispatches.length === 0) state = "idle";
+    } else if (native === undefined) state = record.dispatches.length === 0 ? "idle" : active === undefined ? "unknown" : "running";
+    else if (native.cwd !== record.boundary.cwd
+      || (!switching && (native.model !== bound.model || native.reasoningEffort !== bound.reasoningEffort))) state = "unknown";
+    else if (native.state === "unknown" || native.state === "saved") state = "unknown";
+    else if (native.state === "waiting-approval" || native.state === "interrupt-requested") state = native.state;
+    else if (native.state === "running" || native.state === "starting" || active?.status === "running") state = "running";
+    else state = native.state === "idle" ? "idle" : "unknown";
     const dispatch = record.dispatches.at(-1);
-    const awaitingTurn = dispatch !== undefined && (facts?.turnId === undefined || facts.turnId === dispatch.previousTurnId);
+    const nativeTurnId = native?.turnId ?? sessionTurns?.at(-1)?.turnId;
+    const awaitingTurn = dispatch !== undefined && (nativeTurnId === undefined || nativeTurnId === dispatch.previousTurnId);
     if (awaitingTurn && state === "idle") state = active === undefined ? "unknown" : "running";
-    const reports = (facts?.reports ?? []).map(report => ({ ...report, workerId: id,
+    const reports = (native?.reports ?? sessionTurns ?? []).map(report => ({ ...report, workerId: id,
       acceptance: record.acceptance[report.turnId]?.value ?? "pending", acknowledgedAt: record.acceptance[report.turnId]?.acknowledgedAt }));
     return { id, parentSessionId: parentId, name: record.name, role: record.role, profile: record.profile, cwd: record.boundary.cwd,
-      model: facts?.model ?? record.execution.model, effort: facts?.reasoningEffort ?? record.execution.reasoningEffort,
-      threadId: facts?.threadId, turnId: awaitingTurn ? undefined : facts?.turnId, state, reports };
+      model: native?.model ?? active?.options.model ?? bound.model,
+      effort: native?.reasoningEffort ?? (active?.options.reasoningEffort === undefined ? bound.reasoningEffort : String(active.options.reasoningEffort)),
+      threadId: native?.threadId, turnId: awaitingTurn ? undefined : nativeTurnId, state, reports,
+      ...(native?.pending === undefined ? {} : { pending: native.pending }),
+      ...(record.strategy === undefined ? {} : { strategy: record.strategy }),
+      ...(record.handoff === undefined ? {} : { handoff: record.handoff }) };
+  }
+
+  /**
+   * Read one child's completed turns from the DSH session it still owns.
+   *
+   * Used once an execution continues under an adapter that has no native reader
+   * of its own: turn identity, terminal status and the model-visible final text
+   * all come from the session log, so acceptance keeps the same meaning.
+   * @param id - the child session id.
+   * @returns one entry per closed turn, oldest first; `undefined` when the session or its log is unavailable.
+   */
+  private sessionTurns(id: string): SessionTurn[] | undefined {
+    let session
+    try { session = this.ctx.sessions.get(SessionId(id)) }
+    catch { return undefined }
+    const events = session?.snapshotEvents?.()
+    if (events === undefined) return undefined;
+    const turns: SessionTurn[] = [];
+    let turn: number | undefined;
+    let text = "";
+    let interrupted = false;
+    for (const event of events) {
+      if (event.type === "turn/start") { turn = event.data.turn; text = ""; interrupted = false; continue }
+      if (turn === undefined) continue;
+      if (event.type === "assistant/message" && event.data.turn === turn) {
+        text = event.data.message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
+        if (event.data.interrupted === true) interrupted = true;
+        continue;
+      }
+      if (event.type !== "turn/end" || event.data.turn !== turn) continue;
+      const reason = event.data.reason;
+      turns.push({ turnId: `dsh-${turn}`, status: reason.kind === "error" ? "failed" : interrupted || reason.kind === "aborted" ? "interrupted" : "completed",
+        result: text, threadId: id, createdAt: event.time });
+      turn = undefined;
+    }
+    return turns;
+  }
+
+  /** The model configuration this record's current phase runs on. */
+  private boundInput(record: NativeChildRecord): RoleInput {
+    const tier = record.strategy?.tier;
+    const snapshot = tier === undefined ? undefined : record.coding?.[tier];
+    return snapshot === undefined
+      ? { provider: record.execution.provider, model: record.execution.model, reasoningEffort: record.execution.reasoningEffort }
+      : snapshot;
+  }
+
+  /**
+   * Settle one execution's control report for its bound phase.
+   *
+   * Only a `bootstrap` opening phase authorizes a handoff, and only after the
+   * native turn that reported it has ended. The Host then continues the same
+   * worker, task and attempt on the other Profile configuration; the parent
+   * model neither approves the switch nor reads the whole log.
+   * @param parentId - the authorizing parent Session.
+   * @param id - the managed child.
+   * @param turnId - the completed turn whose report is being read.
+   * @returns whether this call performed the handoff.
+   */
+  async settleControl(parentId: string, id: string, turnId: string): Promise<ControlOutcome> {
+    const record = this.record(parentId, id);
+    const worker = await this.get(parentId, id);
+    if (worker.state !== "idle") throw new Error("Execution is not confirmed idle");
+    const report = worker.reports.find(candidate => candidate.turnId === turnId);
+    if (report === undefined || report.status !== "completed") throw new Error("A completed report is required");
+    const signal = parseControlSignal(report.result);
+    if (signal === undefined) return { accepted: false };
+    const binding = record.strategy;
+    const phase = `${binding?.effective ?? "unbound"} phase ${binding?.phase ?? "unknown"}`;
+    if (signal.kind === "consult") {
+      // Bounded consultation is a separate lifecycle: the workflow layer owns
+      // the expert child, its read-only boundary and the conclusion hand-back,
+      // so this call reports the signal without acting on it.
+      return { accepted: false, signal };
+    }
+    if (binding?.effective !== "bootstrap" || binding.tier !== "sup" || binding.phase === "continuation") {
+      return { accepted: false, signal, reason: `execution control handoff is not authorized for ${phase}` };
+    }
+    return await this.performHandoff(parentId, id, turnId, signal, record);
+  }
+
+  /** Deliver one authorized handoff continuation and record it on the child. */
+  private async performHandoff(parentId: string, id: string, turnId: string, signal: HandoffSignal, current: NativeChildRecord): Promise<ControlOutcome> {
+    const record = structuredClone(current);
+    const existing = record.handoff;
+    if (existing !== undefined) {
+      // Repeated notifications reuse the recorded continuation instead of
+      // delivering a second one.
+      if (existing.sourceTurnId === turnId) return { accepted: true, signal, handoff: existing };
+      throw new Error("a handoff is already recorded for this execution");
+    }
+    if (record.coding === undefined || record.strategy === undefined) throw new Error("Execution has no bound Profile snapshot to continue from");
+    if (signal.target !== "def") return { accepted: false, signal, reason: `handoff target ${signal.target} is not reachable from the opening phase` };
+    if (this.routeAdapter === undefined) {
+      return { accepted: false, signal, reason: "the installed subagent package cannot change an execution route; rebuild and install the coordinated DSH package set before using bootstrap" };
+    }
+    const target = record.coding[signal.target];
+    // Continuing under another adapter keeps the DSH session but loses the
+    // native thread, so the executed facts of the previous adapter must travel
+    // with the continuation prompt. Without a projector the handoff is refused
+    // with its concrete reason instead of dropping the implementation history.
+    const crossProvider = target.provider !== record.execution.provider;
+    let facts: readonly string[] | undefined;
+    if (crossProvider) {
+      const read = (this.ctx.codexExecution as { facts?: (sessionId: string) => Promise<readonly string[]> }).facts;
+      if (read === undefined) {
+        return { accepted: false, signal, reason: `cross-provider continuation to ${target.provider} needs the installed provider package's sourced execution-fact projector` };
+      }
+      facts = await read.call(this.ctx.codexExecution, id);
+    }
+    const requestId = `${id}:handoff:${turnId}`;
+    const prompt = handoffPrompt(signal, crossProvider ? facts ?? [] : undefined);
+    record.handoff = { requestId, sourceTurnId: turnId, target: signal.target, messageId: "", prompt, at: Date.now() };
+    // The recorded request is committed before delivery so a lost response is
+    // observable instead of silently repeating the continuation.
+    this.store.putNativeChild(record);
+    const { parent, signal: operation } = this.context();
+    try {
+      const messageId = await this.routeAdapter(this.ctx.subagents, parent, SessionId(id),
+        [{ type: "text", text: prompt }], { kind: "user" }, operation,
+        { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort });
+      record.handoff = { ...record.handoff, messageId };
+      record.strategy = { ...record.strategy, tier: signal.target, phase: "continuation" };
+      this.store.putNativeChild(record);
+      return { accepted: true, signal, handoff: record.handoff };
+    } catch (error) {
+      // A rejected or unknown delivery keeps the recorded request so the next
+      // observation reconciles it instead of dispatching a second switch.
+      record.strategy = { ...record.strategy, tier: signal.target, phase: "continuation" };
+      this.store.putNativeChild(record);
+      throw error;
+    }
+  }
+
+  /**
+   * Start one bounded consultation child for a requesting worker.
+   *
+   * The expert runs as the same `coding_worker` role on the Profile's sup
+   * configuration with only the consultation prompt bound, and its execution
+   * boundary grants write access to its own artifacts — never the requesting
+   * worker's workspace. Identity, residency and reporting stay the ordinary
+   * managed-child path.
+   * @param parentId - the authorizing parent Session.
+   * @param id - the reserved consultation child identity.
+   * @param request - the bounded question and its read-only workspace.
+   * @returns the started expert's projection.
+   */
+  async startConsultation(parentId: string, id: string, request: ConsultationRequest): Promise<WorkerProjection> {
+    const capture = this.captureSnapshot(CODING_WORKER, request.profile, request.coding,
+      { requested: "adaptive", effective: "independent", tier: "sup", phase: "consultation" }, ["coding-consultation"]);
+    const boundary: Boundary = { cwd: request.cwd, artifacts: request.artifacts, results: request.results,
+      writableRoots: [request.artifacts], network: request.network, ports: {} };
+    await this.create(parentId, { ...capture, id, name: `consult ${request.workerId}`, cwd: request.cwd, managed: true, boundary });
+    return await this.append(parentId, id, request.prompt, true, request.startKey);
+  }
+
+  /**
+   * Record the first turn the native execution ran after a handoff.
+   *
+   * The confirmed target turn is the durable boundary between the opening and
+   * continuing phases; it is observed from native facts rather than assumed
+   * from the delivery, so a lost response never invents one.
+   * @param record - the child's record, already carrying the handoff.
+   * @param turnId - the turn the execution currently reports.
+   * @returns the record to persist, or `undefined` when nothing changed.
+   */
+  noteHandoffTurn(record: NativeChildRecord, turnId: string | undefined): NativeChildRecord | undefined {
+    const handoff = record.handoff;
+    if (handoff === undefined || turnId === undefined || handoff.targetTurnId !== undefined || turnId === handoff.sourceTurnId) return undefined;
+    return { ...record, handoff: { ...handoff, targetTurnId: turnId } };
+  }
+
+  /** Whether the installed package set can continue a worker on another route. */
+  routeSupport(): { supported: boolean; reason?: string } {
+    return this.routeAdapter === undefined
+      ? { supported: false, reason: "the installed subagent package cannot change an execution route" }
+      : { supported: true };
   }
 
   async append(parentId: string, id: string, text: string, managed = false, idempotencyKey?: string): Promise<WorkerProjection> {
@@ -208,4 +637,9 @@ export class WorkflowWorkers {
   private record(parentId: string, id: string): NativeChildRecord { this.parent(parentId); const record = this.store.read().nativeChildren?.[id]; if (record === undefined || record.parentSessionId !== parentId) throw new Error("Managed workflow child not found"); return record; }
   private managed(value: boolean | undefined): void { if (value !== true) throw new Error("Managed workflow child requires codex_workflow"); }
   private expectedTurn(worker: WorkerProjection, turnId: string): void { if (!turnId || worker.turnId !== turnId) throw new Error("Turn identity mismatch"); }
+}
+
+/** Reduce one resolved binding to the durable record kept with an execution. */
+function boundStrategy(binding: StrategyBinding): BoundStrategy {
+  return { requested: binding.requested, effective: binding.effective, tier: binding.tier, phase: binding.phase };
 }

@@ -33,9 +33,12 @@ export function apply(ctx: Context, config?: Config): void {
     const sync = (value: WorkflowSettings): void => {
       storedDefault = value.defaultConfig;
       catalog.setUserConfigs(value.configs);
+      // The two strategy defaults are stored separately and both reach the
+      // catalog here; neither is derived from the other.
+      catalog.setUserStrategies(value);
     };
     sync(settings.get());
-    scope.effect(() => settings.watch(next => { sync(next); }), "dsh-workflow-kit: stored configurations");
+    scope.effect(() => settings.watch(next => { sync(next); }), "dsh-workflow-kit: stored configurations and strategies");
   });
   installProfileRpc(ctx, catalog, store, defaultProfile);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);

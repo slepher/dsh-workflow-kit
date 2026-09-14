@@ -26,5 +26,7 @@ export interface WorkflowState {
   runs: unknown[];
   lanes: { path: string; owner?: string }[];
   selectedProfiles?: Record<string, string | null>;
+  /** Session coding-strategy overrides; an absent entry inherits the stored default. */
+  sessionStrategies?: Record<string, string | null>;
   nativeChildren?: Record<string, import("./workers.js").NativeChildRecord>;
 }

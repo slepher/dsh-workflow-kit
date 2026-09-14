@@ -11,6 +11,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { WORKFLOW_SETTINGS_NAMESPACE, WORKFLOW_PLUGIN_ID } from "../constants.js";
 import type { WorkflowSettingsSection as WorkflowSettingsData } from "../profile-types.js";
+import type { CodingStrategy } from "../constants.js";
 import { ConfigPicker, type ConfigPickerInjected } from "./ConfigPicker.js";
 import { WorkflowSettingsSection, type WorkflowSettingsInjected } from "./WorkflowSettingsSection.js";
 import { WorkflowSettingsController } from "./settings-controller.js";
@@ -39,9 +40,9 @@ export function apply(ctx: Context): void {
   // stylesheet can paint the branch icon it asked to show.
   ctx.effect(() => registerSettingsNavIcon(() => t("nav")), "dsh-workflow-kit: settings nav icon");
 
-  const request: ConfigPickerInjected["request"] = (sessionId, action, profileId) =>
-    action === "select-profile"
-      ? rpc.selectProfile(sessionId, profileId ?? "")
+  const request: ConfigPickerInjected["request"] = (sessionId, action, value) =>
+    action === "select-profile" ? rpc.selectProfile(sessionId, value ?? "")
+      : action === "select-strategy" ? rpc.selectStrategy(sessionId, value === undefined || value === null ? null : value as CodingStrategy)
       : rpc.profiles(sessionId);
   // The picker selects only; every edit lives on the settings page.
   ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
@@ -64,6 +65,7 @@ export function apply(ctx: Context): void {
       renameConfig: (oldId, newId) => controller.renameConfig(oldId, newId),
       resetConfig: configId => controller.resetConfig(configId),
       setDefault: configId => controller.setDefault(configId),
+      setStrategy: (kind, value) => controller.setStrategy(kind, value),
     }),
   }, WorkflowSettingsSection));
 }

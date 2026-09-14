@@ -1,5 +1,9 @@
 # Workflow kit handoff
 
+Historical handoff. Use [README](../README.md) for current runtime boundaries and
+[upgrade.md](../upgrade.md) for the proposed upgrade. The full worker UI described
+below is not current workflow-kit scope.
+
 Date: 2026-09-11 (Asia/Shanghai)
 
 ## Current product boundary

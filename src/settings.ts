@@ -1,6 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import type { WorkflowSettingsSection } from "./profile-types.js";
 import { WORKFLOW_SETTINGS_NAMESPACE } from "./constants.js";
+import { DEFAULT_CODING_STRATEGY, DEFAULT_INTEGRATE_STRATEGY, STRATEGIES } from "./constants.js";
 
 export { WORKFLOW_SETTINGS_NAMESPACE };
 
@@ -8,9 +9,11 @@ export { WORKFLOW_SETTINGS_NAMESPACE };
 export const SETTINGS_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 /**
- * The `dsh-workflow-kit` settings namespace. Role maps are sparse: a role a
- * stored configuration omits keeps its installed value, then the shipped role
+ * The `dsh-workflow-kit` settings namespace. Role maps are sparse: a key a
+ * stored configuration omits keeps its installed value, then the shipped key
  * default. `defaultConfig` empty defers to the entry config's `defaultProfile`.
+ * `codingStrategy` and `integrateStrategy` are stored separately and neither
+ * overwrites the other.
  */
 export type WorkflowSettings = WorkflowSettingsSection;
 
@@ -21,6 +24,8 @@ export type WorkflowSettings = WorkflowSettingsSection;
  */
 export const WorkflowSettingsSchema = z.object({
   defaultConfig: z.string().default(""),
+  codingStrategy: z.union([...STRATEGIES]).default(DEFAULT_CODING_STRATEGY),
+  integrateStrategy: z.union([...STRATEGIES]).default(DEFAULT_INTEGRATE_STRATEGY),
   configs: z.dict(z.object({
     roles: z.dict(z.object({
       provider: z.string(),

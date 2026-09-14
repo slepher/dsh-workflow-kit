@@ -1,5 +1,5 @@
 import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER } from "./constants.js";
-import { ROLES } from "./roles.js";
+import { CONFIG_KEYS, configDefault } from "./roles.js";
 import type { Profile } from "./configuration.js";
 import type { Effort } from "./types.js";
 
@@ -26,16 +26,17 @@ export const SHIPPED_PROFILES = ["gpt-workflow", "ds-workflow"] as const;
 export type ShippedProfileId = (typeof SHIPPED_PROFILES)[number];
 
 /**
- * Build one shipped configuration from the role catalog.
+ * Build one shipped configuration from the configuration-key catalog.
  * @param id - the shipped configuration to build.
- * @returns every role mapped to that configuration's provider, model, and effort.
+ * @returns every key mapped to that configuration's provider, model, and effort.
  */
 export function shippedProfile(id: ShippedProfileId): Profile {
   const roles: Profile["roles"] = Object.create(null);
-  for (const role of ROLES) {
-    roles[role.name] = id === "gpt-workflow"
-      ? { provider: role.provider, model: role.model, reasoningEffort: role.effort }
-      : { provider: DEEPSEEK_PROVIDER, model: DEEPSEEK_MODEL, reasoningEffort: DEEPSEEK_EFFORT[role.effort] };
+  for (const key of CONFIG_KEYS) {
+    const fallback = configDefault(key);
+    roles[key] = id === "gpt-workflow"
+      ? fallback
+      : { provider: DEEPSEEK_PROVIDER, model: DEEPSEEK_MODEL, reasoningEffort: DEEPSEEK_EFFORT[fallback.reasoningEffort] };
   }
   return { roles };
 }

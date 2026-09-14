@@ -21,6 +21,13 @@ ProfileError = ValueError
 TASK = re.compile(r"T[0-9]+")
 GENERATION = re.compile(r"generation-[1-9][0-9]*")
 
+# New coding contracts name the unified `coding_worker`; the two legacy coding
+# roles stay acceptable so already frozen contracts remain readable and
+# recoverable. The Host refuses to start a legacy coding contract until it is
+# revised, so accepting them here is a read-compatibility rule, not a new
+# execution permission.
+CODING_ROLES = {"coding_worker", "def_coding_worker", "sup_coding_worker"}
+
 
 class Invalid(ValueError):
     pass
@@ -111,9 +118,7 @@ def contract(path: Path, roles: set[str]) -> dict[str, str]:
         raise Invalid(f"{path}: invalid Kind")
     if fields["Role"] not in roles:
         raise Invalid(f"{path}: invalid execution Role")
-    if fields["Kind"] == "implementation" and fields["Role"] not in {
-        "def_coding_worker", "sup_coding_worker"
-    }:
+    if fields["Kind"] == "implementation" and fields["Role"] not in CODING_ROLES:
         raise Invalid(f"{path}: implementation requires a coding worker")
     # `manager` names the main agent that owns the generation; `dispatcher`
     # is the older spelling of the same value and stays accepted.

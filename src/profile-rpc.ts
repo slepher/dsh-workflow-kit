@@ -6,11 +6,28 @@ import type {} from "@deepseek-ai/dsh-session-persistence";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { WorkflowConfiguration } from "./configuration.js";
 import type { WorkflowStore } from "./store.js";
+import { bindCodingStrategy, isStrategy, type CodingStrategy } from "./strategy.js";
+import type { StrategyView } from "./profile-types.js";
 
 const CHANNEL = "/workflow";
 /** The browser carrier buffers one JSON body; profile payloads carry Session addresses and profile ids. */
 const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 const INVALID_REQUEST_RPC_ID = "invalid-request";
+
+/**
+ * Resolve the coding strategy facts one Session reads. The Host owns this
+ * derivation so the composer cannot disagree with dispatch: an explicit
+ * Session preference wins, otherwise the stored coding default applies, and a
+ * Profile whose sup/def share one provider and model fixes independent
+ * execution without discarding the preference.
+ */
+function strategyView(catalog: WorkflowConfiguration, store: WorkflowStore, sessionId: string, defaultProfile: () => string | undefined): StrategyView {
+  const preference = store.strategyPreference(sessionId);
+  const selected = isStrategy(preference) ? preference : null;
+  const fallback = catalog.strategies().coding;
+  const binding = bindCodingStrategy(catalog.profile(store.selectedProfile(sessionId, defaultProfile())), selected ?? fallback, "main");
+  return { preference: selected, default: fallback, effective: binding.effective, sameModel: binding.sameModel, fixed: binding.sameModel };
+}
 
 /** HTTP carrier facts this channel reads; the Web server's `node:http` request satisfies it structurally. */
 interface RpcRequest extends ConnectionTrustRequest {
@@ -69,7 +86,7 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
     const dispatch = (endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult<unknown>> => {
       const operation = queue.then(async () => {
         signal.throwIfAborted();
-        if (!["configurations", "profiles", "select-profile"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
+        if (!["configurations", "profiles", "select-profile", "select-strategy"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid workflow request");
         const value = payload as Record<string, unknown>;
         // Built-in configurations are package content and the stored layer is
@@ -78,7 +95,7 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
           if (Object.keys(value).length > 0) throw new Error("Invalid workflow request");
           return { defaultConfig: defaultProfile() ?? null, ...catalog.view() };
         }
-        const fields = endpoint === "select-profile" ? ["sessionId", "profileId"] : ["sessionId"];
+        const fields = endpoint === "profiles" ? ["sessionId"] : endpoint === "select-profile" ? ["sessionId", "profileId"] : ["sessionId", "strategy"];
         if (Object.keys(value).some(key => !fields.includes(key)) || typeof value.sessionId !== "string" || !value.sessionId) throw new Error("A native Session address is required; caller identities are not accepted");
         const id = SessionId(value.sessionId);
         const header = scope.sessions.get(id)?.header ?? (await scope.get("sessionPersistence")?.stat(id, { signal }))?.header;
@@ -88,8 +105,13 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
         if (endpoint === "select-profile") {
           if (typeof value.profileId !== "string" || !listed.configs.some(config => config.id === value.profileId)) throw new Error("Selected workflow profile is unavailable");
           store.selectProfile(id, value.profileId);
+        } else if (endpoint === "select-strategy") {
+          // Only coding strategies carry a Session override; integrate settings
+          // are deployment-wide and have no Session scope.
+          if (value.strategy !== null && !isStrategy(value.strategy)) throw new Error("Unknown workflow strategy");
+          store.selectStrategy(id, value.strategy === null ? undefined : value.strategy as CodingStrategy);
         }
-        return { selectedProfile: store.selectedProfile(id, defaultProfile()) ?? null, ...listed };
+        return { selectedProfile: store.selectedProfile(id, defaultProfile()) ?? null, strategy: strategyView(catalog, store, id, defaultProfile), ...listed };
       });
       queue = operation.catch(() => {});
       return operation.then(value => ({ ok: true as const, value }), error => ({ ok: false as const,

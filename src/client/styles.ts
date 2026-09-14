@@ -187,6 +187,39 @@ const CSS = `
 .wf-chip:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }
+/* Two composer chips (configuration and coding strategy) share one seat. */
+.wf-chip-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+/* Strategy and configurations are two views of one settings section. */
+.wf-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-module-platform);
+  align-self: flex-start;
+}
+.wf-tab {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.wf-tab-active {
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
 .wf-catalog-error {
   padding: 8px 4px;
   font-size: 12px;
