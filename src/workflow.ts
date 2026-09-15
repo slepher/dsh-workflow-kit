@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import type { WorkflowWorkers } from './workers.js'
-import type { Capture, Report } from './workers.js'
+import type { Capture, Report, WorkerProjection } from './workers.js'
 import { ROLES, CONFIG_KEYS, CODING_WORKER } from './roles.js'
 import { CODING_CONFIG_KEY } from './constants.js'
 import { bindIntegrateStrategy, snapshotProfile, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type Tier } from './strategy.js'
@@ -558,7 +558,7 @@ export class Workflow {
    * same one used to continue or stop it.
    * @param parent - the owning DSH Session.
    * @param input - the delegation arguments.
-   * @returns the child's projection, with its latest report when reading state.
+   * @returns the child's projection, plus its reply or the reason there is none yet.
    */
   private async delegate(parent: string, input: WorkflowAction) {
     if (input.worker===undefined) {
@@ -572,20 +572,43 @@ export class Workflow {
       if (writes.some(root=>!isAbsolute(root))) throw new Error('delegate writes must name absolute paths')
       const boundary: Boundary = { cwd, writableRoots: writes, network: input.network??'disabled', ports: {} }
       const id=randomUUID()
-      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary})
-      return { worker: await this.workers.append(parent,id,text,true) }
+      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary,delegated:true})
+      const started=await this.workers.append(parent,id,text,true)
+      return { worker: started, ...this.reply(started) }
     }
     const worker=await this.workers.get(parent,input.worker)
     if (input.stop===true) {
       if (worker.state==='running'&&worker.turnId) await this.workers.interrupt(parent,worker.id,worker.turnId,true)
-      return { worker: await this.workers.get(parent,worker.id) }
+      const stopped=await this.workers.get(parent,worker.id)
+      return { worker: stopped, ...this.reply(stopped) }
     }
     if (String(input.text??'').trim()!=='') {
       if (worker.state==='running'&&worker.turnId) await this.workers.steer(parent,worker.id,worker.turnId,String(input.text),true)
       else await this.workers.append(parent,worker.id,String(input.text),true)
-      return { worker: await this.workers.get(parent,worker.id) }
+      const current=await this.workers.get(parent,worker.id)
+      return { worker: current, ...this.reply(current) }
     }
-    return { worker, report: worker.reports.at(-1)??null }
+    return { worker, ...this.reply(worker) }
+  }
+
+  /**
+   * What one delegated child's reply is, or why there is none.
+   *
+   * A delegation answers before the child has worked, so a bare handle would
+   * leave "still running", "settled with nothing" and "never asked"
+   * indistinguishable — the caller can only tell them apart by spending another
+   * turn asking, which is the round trip this field exists to remove.
+   * @param worker - the child's current projection.
+   * @returns the reply and the report carrying it, or `reply: null` with the reason.
+   */
+  private reply(worker: WorkerProjection) {
+    const report=worker.reports.at(-1)
+    if (report===undefined) return { reply: null, report: null, note: worker.state==='idle'
+      ? 'The child settled without reporting; no reply is coming.'
+      : `The child is ${worker.state}; its reply arrives as a settlement notice.` }
+    const text=report.result.trim()
+    if (text==='') return { reply: null, report, note: `The child reported no result (turn ${report.status}).` }
+    return { reply: text, report }
   }
 
   private async action(parent: string, input: WorkflowAction) {

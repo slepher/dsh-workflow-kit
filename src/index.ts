@@ -21,7 +21,7 @@ export type { BoundStrategy, Capture, ControlOutcome, HandoffRecord, NativeChild
 export { handoffPrompt, parseControlSignal } from "./control.js";
 export type { ConsultSignal, ControlSignal, ControlTier, HandoffSignal } from "./control.js";
 export { Workflow, type WorkflowAction } from "./workflow.js";
-export { apply, inject, name, type Config } from "./host.js";
+export { apply, delegationNotice, inject, name, type Config } from "./host.js";
 export type * from "./types.js";
 
 export { bindCodingStrategy, bindIntegrateStrategy, sameModel, snapshotProfile, tierConfigKey } from "./strategy.js";

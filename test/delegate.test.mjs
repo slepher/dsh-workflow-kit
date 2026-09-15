@@ -55,6 +55,50 @@ test("delegate assigns one role task without a generation and keeps its handle",
   assert.equal(f.calls.some(call => call.interrupt === true), true, "a running delegation can be stopped");
 });
 
+test("a delegation states its reply, or why there is none", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-delegate-reply-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cwd = join(root, "work"); mkdirSync(cwd);
+  const f = fixture(t, { cwd, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+
+  // The start answers before the child worked, so the result names the channel
+  // the reply will arrive on instead of leaving the caller to guess.
+  const started = await action({ action: "delegate", role: "evidence_runner", text: "Run the acceptance check." });
+  assert.equal(started.reply, null);
+  assert.equal(started.report, null);
+  assert.match(started.note, /settlement notice/, "a pending reply says where it will arrive");
+
+  // A settled child's report text is its reply.
+  const reported = await f.run(async () => {
+    f.finish(started.worker.id, "- Outcome: complete");
+    return action({ action: "delegate", worker: started.worker.id });
+  });
+  assert.equal(reported.reply, "- Outcome: complete");
+  assert.equal(reported.note, undefined, "a reply needs no explanation");
+
+  // An empty report is a result too: the caller is told the turn reported
+  // nothing rather than being handed a null it cannot read.
+  const blank = await action({ action: "delegate", role: "evidence_runner", text: "Run the blank check." });
+  const empty = await f.run(async () => {
+    f.finish(blank.worker.id, "   ");
+    return action({ action: "delegate", worker: blank.worker.id });
+  });
+  assert.equal(empty.reply, null);
+  assert.notEqual(empty.report, null, "the empty report stays the evidence for the missing reply");
+  assert.match(empty.note, /reported no result/);
+
+  // Settling with no report at all reads differently from still running.
+  const silent = await action({ action: "delegate", role: "evidence_runner", text: "Run the silent check." });
+  f.facts.get(silent.worker.id).state = "idle";
+  f.ctx.agents.delete(silent.worker.id); f.ctx.sessions.delete(silent.worker.id);
+  const settled = await action({ action: "delegate", worker: silent.worker.id });
+  assert.equal(settled.reply, null);
+  assert.match(settled.note, /settled without reporting/);
+  assert.notEqual(settled.note, started.note, "a finished child is not reported as a pending one");
+});
+
 test("delegate refuses what it cannot execute as asked", async t => {
   const root = mkdtempSync(join(tmpdir(), "workflow-delegate-guards-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

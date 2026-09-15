@@ -1,8 +1,11 @@
 # Workflow 流程管理升级方案
 
+> 当前用户需求：[plugin-requirements.md](../plugin-requirements.md)。
+> 本文保留升级演变；策略与交接行为是需求来源，旧 core/权限/事件通道方案及“尚未实现”快照不再作为当前实施指令。
+
 日期：2026-09-14。
 
-状态：设计与实施依据；新增行为正在另行实施，文中目标行为不代表已通过真实验证。当前选定接续方案为“后继 DSH child＋保留 Codex thread”，替代早先要求 DSH Session／worker 不变的方案。
+状态：阶段设计记录；文中目标行为不代表当前验证结果。选定接续方案为“后继 DSH child＋保留 Codex thread”，替代早先要求 DSH Session／worker 不变的方案；当前工作按上方统一入口执行。
 
 ## 1. 目标
 
