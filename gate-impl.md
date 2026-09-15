@@ -16,6 +16,23 @@
 8. 提交、合并、抛弃、释放仍由已有 workflow 动作处理。新增一个明确的工作流完成检查，不能把正常 idle 等待当作完成。
 9. 不执行 `gate-migrate.md` 的 Python → TS 迁移、格式删门、native 角色统一或哈希复检。该文件是此前讨论材料，本文规定本次实施范围。
 
+### 0.1 修订记录 R1：实现前核实出的缺口与已定决策
+
+第一版方案在动手前对照了真实代码、已安装依赖与本机 Codex 0.154.0，核实出以下缺口。**下文各节已按本节修订**，执行者按修订后的正文实现。
+
+| # | 事项 | 已定决策 |
+|---|---|---|
+| D1 | 已注册子 session 的调度类工具策略 | 采用**显式 deny 清单补全**。除 `subagent`/`send_message`/`interrupt_agent` 外，一并拒绝出厂预设别名 `subagent_fork`、DSH 原生 `workflow`、`ralph`、agent-team 的 `spawn_teammate`/`wait_agent`/`team_task_*`、以及 `codex_workers`；其余工具保持 allow。`mcp__*` 与 `cordis_*` 是名字清单追不上的两类入口，列入 §1.2 的已知不覆盖，并在 README 明写。 |
+| D2 | `exec.agent.session.header.cwd` 缺失时 | **拒绝**该次文件写操作（与 §1.3「单调拒绝」一致）。不回退 `process.cwd()`——那是 server 启动目录，不是 session workspace。 |
+| D3 | lane 记录与 `git worktree add` 的顺序 | 以现行为准：`run.attempts.push`/`lane.owner`/`save()` 本就在 `git worktree add` 之前。gate 绑定在 worktree 建好**之后**构造并保存，不要求调整既有顺序。原 §5.1「不能先创建 lane 内文件再运行 `git worktree add`」作废。 |
+| D4 | Codex `PreToolUse` 的 `matcher` | 使用 `"*"`。这是本机已受信插件 hook 的既有写法，且 P0 实测命中；不采用未经实测的 `".*"`。 |
+| D5 | Hook 信任机制 | 未受管 hook 即使 `enabled: true` 也会被**静默跳过**（P0 实测）。受管部署是唯一无需用户信任记录的方式；若用 `config.toml` 条目，必须同时写入 `[hooks.state."<sourcePath>:pre_tool_use:<matcherIndex>:<hookIndex>"]`，其 `trusted_hash` 等于 `hooks/list` 返回的 `currentHash`。 |
+| D6 | 「hook 是否已加载」的验证 | 改为**启动前 preflight**：`hooks/list` 必须返回期望条目、`trustStatus` 为 `managed`/`trusted`、且无 `errors`；否则拒绝启用 gated Codex session。删除原 §7.4「不能从 App Server schema 自动证明 hook 已加载」的表述。 |
+| D7 | 拒绝证据 | provider 除接收 hook 请求外，还订阅 `hook/started`/`hook/completed`（`HookRunSummary`），用于区分「hook 已调用且 DSH 拒绝」与「Codex 根本没尝试工具」。 |
+| D8 | guard 拒绝的可辨识性 | DSH guard 的拒绝**不带 error code**，只有 `Error: <reason>`。因此 reason 统一以固定前缀 `workflow gate: ` 开头（与 §7.4 的 Codex 侧一致），使会话日志中的 gate 拒绝可机器识别。 |
+| D9 | `present`/`todo_write` 等非文件写工具 | 不纳入文件写检查；`present` 只读并追加 `deliverables/presented`，落在 §4.1「其他未列工具 → allow」。 |
+| D10 | 符号名更正 | 正文出现的 `Owned` 实为 `task.owned: string[]`；`paths()` 是 `git diff --name-only` 的**变更文件名列表**，不是可写路径集合；`startContinuable` 是 `ctx.subagents` 的方法，不是 workers 的方法。 |
+
 ## 1. 范围与完成含义
 
 ### 1.1 范围内
@@ -29,6 +46,7 @@
 ### 1.2 不做
 
 - 不保证覆盖 shell 内部的 `open/write/rename`、解释器、后台进程或任意 MCP 的副作用。
+- 按名字匹配的工具清单追不上两类入口，明确列为本版不覆盖：MCP 工具注册为 `mcp__<serverName>__<rawName>`；`cordis_define`/`cordis_run` 可在运行时注册并执行任意代码。
 - 不解析 shell AST，不把 `pytest`、`npm test` 等命令字符串做成不断扩大的黑名单。
 - 不改变现有 Codex sandbox、approval、network 或 writableRoots 策略；不借本次任务修复所有权限接线问题。
 - 不实现 Windows hook IPC；首版真实 Codex 闭环验收在本机 Linux 完成。DSH 原生 guard 不依赖该 IPC。
@@ -152,7 +170,7 @@ type WorkflowGateArgs = {
 | manager | DSH `bash`、`pwsh`；Codex `Bash`、`exec_command`、`shell`、`shell_command`、`write_stdin` | deny：让对应 worker 执行 |
 | manager | 明确文件写操作 | 只允许 sharedWrites/auxiliaryWrites；productWrites 必须为空 |
 | manager | `codex_workflow` 的已有动作与 `complete` | 通过本 gate，动作自身继续执行已有检查 |
-| 已注册子 session | DSH `subagent`、`send_message`、`interrupt_agent`；Codex `spawn_agent`/`Agent`、`send_message`、`resume_agent`、`close_agent` | deny：子任务调度由 manager/Host 负责 |
+| 已注册子 session | DSH `subagent`、`subagent_fork`、`workflow`、`ralph`、`spawn_teammate`、`wait_agent`、`team_task_create`/`team_task_list`/`team_task_get`/`team_task_update`、`send_message`、`interrupt_agent`、`codex_workers`；Codex `spawn_agent`/`Agent`、`send_message`、`resume_agent`、`close_agent` | deny：子任务调度由 manager/Host 负责 |
 | coding worker | 明确文件写操作 | 按 §4.3 检查 |
 | planner、reviewer、context_collector、evidence_runner、full_tester | 明确文件写操作 | productWrites 为空；只允许明确辅助/文档授权 |
 | worker/planner/reviewer | shell | allow；不解析其中的文件副作用，既有 sandbox 继续处理 |
@@ -162,7 +180,9 @@ type WorkflowGateArgs = {
 
 - manager 禁的是整个已知 shell 工具入口，不靠识别某个测试命令。
 - persistent bash/pwsh 的公开工具名也是 `bash`/`pwsh`，同样拒绝。
-- DSH 子任务工具按默认注册名检查；`list_agents` 是只读查询，不拒绝。首版不发现用户自定义 `subagent.toolName` 别名，部署说明列出这一覆盖限制。
+- DSH 子任务与编排工具按实际注册名检查。`subagent_fork` **不是**用户自定义别名：它是 shipped preset 为 `subagent` 设的出厂名，本部署两者同时存在，必须都拒绝。`workflow`、`ralph`、agent-team 系列与 `codex_workers` 同样是一次 fan-out 多名子 agent 的入口，`list_agents`/`list_subagent_models` 是只读查询，不拒绝。
+- 名字清单追不上的两类入口（记入 §1.2 已知不覆盖）：MCP 工具注册为 `mcp__<serverName>__<rawName>`；`cordis_define`/`cordis_run` 可在运行时注册并执行任意代码。首版不因此改成白名单制，但 README 与 §12 必须明列。
+- manager 只 deny shell 不足以表达「manager 只编排、不动手」：manager 同样是调度类工具的调用者，§5.2 的 manager 禁令按同一份清单执行。
 - 不过滤 DSH 的程序化工具调用展示载体；检查其中最终调用的实际工具。具体工具不会因为包在代码模式中而跳过 gate。
 - 不调用 `tools.restrict()` 注册可能尚未安装的工具名；本次统一使用 guard 判断实际到达的名称。
 - 普通 delegate 仍没有自动提交/合并要求；它只获得 role 与文件操作 gate。
@@ -195,7 +215,7 @@ Codex patch 仅支持现有 `*** Begin Patch` / `*** End Patch` 格式：
 按以下顺序，不增加模糊匹配：
 
 1. 将工具相对路径按 `event.cwd` 解析为绝对路径；不用 Node 进程的 CWD。
-2. 检查 event.cwd 对应已绑定的 assignment cwd。对文件工具若执行上下文与绑定不一致，拒绝并报告两者；不自动改写 cwd。
+2. 先取 `event.cwd`，来源固定为 `exec.agent?.session.header.cwd`（仓库内既有写法见 `packages/fs/tool-fs/src/session-cwd.ts`）。**对文件写工具，cwd 缺失即拒绝**，理由写「session has no working directory」；不回退 `process.cwd()`。再检查它与已绑定的 assignment cwd 是否一致；不一致则拒绝并报告两者，不自动改写 cwd。
 3. 对目标及 grant 使用现有 `scoped()` 的“最近存在祖先 + realpath”方法检查符号链接。抽出可复用小函数，保持原有调用语义；不存在的尾部逐段接回。
 4. 同时要求词法路径和解析后的真实路径均属于同一项 grant。目录比较使用 `relative()`/路径分隔符，不能用裸 `startsWith()`。
 5. productWrites 还必须满足 lane（有 lane 时）的两种包含检查。
@@ -212,7 +232,7 @@ Codex patch 仅支持现有 `*** Begin Patch` / `*** End Patch` 格式：
 
 顺序固定为：
 
-1. 完成现有 assignment/lane/report 分配，并完成现有 worktree 创建/checkout。路径 grant 的归一化放在工作目录实际存在之后；不能先创建 lane 内文件再运行 `git worktree add`。
+1. 完成现有 assignment/lane/report 分配，并完成现有 worktree 创建/checkout。现行顺序是 `run.attempts.push`/`lane.owner`/`save()` 先于 `git worktree add`（见 D3），本次**不调整**该顺序；gate 绑定在 worktree 建好之后构造并保存。路径 grant 的归一化必须在工作目录实际存在之后。
 2. 构造 gate，深拷贝保存到 `NativeChildRecord`。
 3. 若本次 provider 是 Codex，调用 `ctx.codexToolGate.bind(childId, gate)`。
 4. 调用现有 `startContinuable`/后继启动入口。
@@ -221,7 +241,7 @@ DSH guard 从 workflow store 按真实 `exec.agent.session.id` 查绑定；不�
 
 | 创建位置 | productWrites | auxiliaryWrites/sharedWrites |
 |---|---|---|
-| 正常受管 coding task | `Owned paths` 相对实际 cwd 解析；禁止用 `[lane.path]` 替代 | 已声明 Write paths、具体 reportPaths、该 worker artifacts |
+| 正常受管 coding task | `task.owned` 逐项相对实际 cwd 解析；禁止用 `[lane.path]` 替代 | 已声明 Write paths、具体 reportPaths、该 worker artifacts |
 | 非 coding 受管 task | 空 | 该 assignment 明确的报告、artifacts、辅助写路径 |
 | 普通 coding delegate | 现有 `writes` 逐项转换为 grant；无 lane | 不增加隐式授权 |
 | 普通非 coding delegate | 空 | 现有明确 `writes` 放入 sharedWrites；不推断更多可写位置 |
@@ -232,14 +252,15 @@ DSH guard 从 workflow store 按真实 `exec.agent.session.id` 查绑定；不�
 注意：
 
 - `Role: coding_worker` 不等于一定能改产品；consultation 的 productWrites 仍为空。
-- integration repair 在派发时提前计算并冻结允许路径并集，复用 `paths()`。执行后的 `resolved` 检查继续保留。
+- integration repair 在派发时提前计算并冻结允许路径并集，复用 `paths()`。注意 `paths()` 返回的是 `git diff --name-only` 的**变更文件名列表**，不是可写路径集合；这与现有 `resolved` 检查的语义一致。执行后的 `resolved` 检查继续保留。
 - `reports` 用具体报告路径生成授权；不要仅因存在一份报告就把整个 results 目录授予所有写入。
 - Git 提交由现有 shell 路径完成。本 gate 不把 Git 元数据添加为文件编辑授权，也不改现有 sandbox 的 Git roots。
 - 公共文档沿用“一文件一 writer”：manager 默认只拥有当前 generation 的 `summary.md`；planner 的计划文档通过明确 assignment 授权。新登记的 sharedWrites 若与未关闭子 session 或 manager 的 sharedWrites 重叠，拒绝该分配，复用现有 overlap 语义，不做第二套锁服务。
 
 ### 5.2 manager
 
-- 在 `adopt` 成功后，按 run.parent 派生 manager 绑定：role=`manager`，cwd=repository，productWrites=[]，sharedWrites 仅当前 generation 的 `summary.md`。
+- 在 `adopt` 成功后，按 run.parent 派生 manager 绑定：role=`manager`，cwd=repository，productWrites=[]，sharedWrites 仅当前 generation 的 `summary.md`。`run.parent` 是 DSH session id 字符串，guard 正是按 session id 查表，不需要新增 manager 记录。
+- manager 的拒绝清单同时包含 shell（§4.1 第一行）与**全部调度类工具**（§4.1 第三行清单）。否则 manager 可用 `subagent`/`workflow`/`ralph` 派出未注册的子 session，其 `bash` 禁令等于失效——那些孩子不在 gate 覆盖内。
 - 不把 planner 的 plan/tasks/contracts 授给 manager。
 - manager 绑定由当前 run 派生，不新增持久化表。每次 guard 查当前 run；adopt 新 revision 后自然使用更新的 run。
 - `delegate` 不隐式把尚未 adopt 的父 session 变成受管 manager。
@@ -263,7 +284,7 @@ DSH guard 从 workflow store 按真实 `exec.agent.session.id` 查绑定；不�
 1. 没有 `exec.agent`：本 gate 不参与。
 2. 验证 agent 是当前注册的 live agent，session 是当前注册的 session；复用现有 Host identity 检查方式。
 3. 查 child gate；没有则查已 adopt manager 绑定；两者都没有则返回 undefined。
-4. 从 `exec.name`、完整 `exec.arguments`、callId 和实际 agent/session cwd 构造 GateEvent。
+4. 从 `exec.name`、完整 `exec.arguments`、callId 和实际 agent/session cwd 构造 GateEvent。cwd 取自 `exec.agent?.session.header.cwd`；`ToolExecution` 本身没有 `cwd` 字段。
 5. 调用唯一 workflow handler；deny 返回 reason，allow 返回 undefined。
 
 guard 是单调拒绝机制，不能覆盖其他 guard 的拒绝。不手动调用 `ctx.tools.execute()` 模拟一次原调用，不重复执行，也不绕过工具原有 sandbox。
@@ -286,17 +307,28 @@ provider 构建后包含 `lib/pretool-client.js`；现有 package `files: ["lib"
 在 provider README 提供固定的 **managed `requirements.toml`** 配置模板，使用部署机 Node 和 client 文件的绝对路径：
 
 ```toml
+# 若目标配置已存在 [features]，把 hooks = true 合并进该表，
+# 不要追加第二个 [features] 表——TOML 重复表会解析失败，本机配置就有 [features]。
 [features]
 hooks = true
 
 [[hooks.PreToolUse]]
-matcher = ".*"
+matcher = "*"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = "<absolute-node> <absolute-provider>/lib/pretool-client.js"
 timeout = 10
 ```
+
+`matcher` 用 `"*"`：这是本机已受信插件 hook 的既有写法，且 P0 实测命中。不要用未实测的 `".*"`。
+
+**信任是独立于启用的一步，且失败是静默的**（P0 实测）：未受管的 `config.toml` 条目会出现在 `hooks/list` 里、`enabled: true`，但 `trustStatus: "untrusted"`，执行时被直接跳过且不报错。两条合规路径：
+
+1. **受管配置**（首选）：写 requirements 层，条目 `trustStatus` 为 `managed`，不需要用户信任记录。Linux 上是 `/etc/codex/requirements.toml`，需要 root。
+2. **用户配置 + 信任记录**：追加 `[[hooks.PreToolUse]]` 后，读取 `hooks/list` 得到的 `currentHash`，写入
+   `[hooks.state."<sourcePath>:pre_tool_use:<matcherIndex>:<hookIndex>"]` 的 `trusted_hash`（`sourcePath` 为该配置文件绝对路径）。该键的 `trusted_hash` 与 `currentHash` 相等时 `trustStatus` 变为 `trusted`。
+   注意：代用户写信任记录等于绕过信任提示，只在明确授权的部署步骤里做，并写进 README。
 
 执行要求：
 
@@ -353,7 +385,8 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 
 允许使用同样结构的 `permissionDecision: "allow"`。不输出 `ask`、`continue:false` 或 `updatedInput`。client 的 stdout 只输出协议，诊断到 stderr，不打印 runtime key。
 
-命令程序本身未启动/被 Codex 跳过时，本桥无法返回 deny；这是明确的运行前置和真实测试项目，不通过增加另一个权限系统解决。执行者必须先完成部署与真实 hook 验收，再在该部署上启用新的 gated Codex assignment；不能把“未观察到 hook”解释为 allow，也不能静默去掉 gate 重试。不声称 provider 已能从 App Server schema 自动证明 hook 已加载。
+命令程序本身未启动/被 Codex 跳过时，本桥无法返回 deny；但**「被跳过」是可以在启动前判定的**，见下条。执行者必须先完成部署与真实 hook 验收，再在该部署上启用新的 gated Codex assignment；不能把“未观察到 hook”解释为 allow，也不能静默去掉 gate 重试。
+- **Provider 必须做启动前 preflight**（取代原“不声称能自动证明 hook 已加载”）：对该 runtime 的 cwd 调用 `hooks/list`，要求期望的 `preToolUse` 条目存在、`trustStatus` 为 `managed` 或 `trusted`、`enabled` 为真、且该条目无 `errors`。任一不满足则**拒绝启动 gated session** 并报告具体原因。这把「hook 被静默跳过」从不可观测的部署风险变成可判定的失败。
 
 ### 7.5 Provider 生命周期接线
 
@@ -395,6 +428,15 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 4. 确认部署具备受管同步 PreToolUse 配置来源。产出真实路径的安装模板；hook 未加载不能进入“Codex 真实闭环已完成”的验收状态。
 5. 不为能力不满足自动升级依赖或改 Codex 源码。可继续完成不依赖它的 DSH 原生实现。
 
+**P0 已完成，实测结论（2026-09-15，`codex-cli 0.154.0`，本机 Linux）：**
+
+- `guard()` 可用。注意 `package.json` 声明 `@deepseek-ai/dsh-tools@0.1.5-rc.1`，而 `node_modules` 实际安装 **0.1.5-rc.2**；`ToolGuard` 签名在两者一致，但协调依赖版本这一项要在 P1 开工前对齐。
+- Codex 二进制包含 hooks 体系：`features.hooks`、`HookEventsToml.PreToolUse`、`ManagedHooksRequirementsToml{managed_dir,windows_managed_dir}`、`allow_managed_hooks_only`，以及 app-server 的 `hooks/list`、`hook/started`、`hook/completed`。
+- **同步 PreToolUse deny 真的会阻断执行**：在 `config.toml` 加入 `matcher = "*"` 的 command hook，并把它标为 trusted 后，`Bash`（`touch marker.txt`）与 `apply_patch`（`*** Add File:`）**都被拒绝且文件均未落盘**；Codex 返回 `Command blocked by PreToolUse hook: <reason>. Command: <原文>`。上游 #27833/#39872 声称的 apply_patch / bash deny 不生效，在 0.154.0 的 exec/app-server 路径上**未复现**。
+- **未受管 hook 会被静默跳过**：`enabled: true` 但 `trustStatus: "untrusted"` 时，hook 完全不执行、不报错，且 `hook: PreToolUse` 仍显示为已触发（触发的是已受信的插件 hook）。这使 §7.2 的受管部署要求与 §7.4 的启动前 preflight 成为必需，而不是保守起见。
+- 实测 hook 输入字段：`session_id`、`turn_id`、`transcript_path`、`cwd`、`hook_event_name`、`model`、`permission_mode`、`tool_name`、`tool_input`、`tool_use_id`。Codex 侧工具名实测为 `Bash` 与 `apply_patch`；`apply_patch` 的 `tool_input.command` 携带完整 patch，路径可为**绝对路径**。
+- `hooks/list` 逐条返回 `key`、`eventName`、`command`、`matcher`、`timeoutSec`、`enabled`、`isManaged`、`source`、`sourcePath`、`currentHash`、`trustStatus`、`errors`、`warnings`。用户配置条目的 key 形如 `<绝对 sourcePath>:pre_tool_use:<matcherIndex>:<hookIndex>`；`[hooks.state.<key>].trusted_hash` 等于 `currentHash` 即为 trusted。
+
 ### P1：绑定与唯一校验函数
 
 1. provider 新增公开类型/registry/bind 接口和 options.gate 持久化。
@@ -417,7 +459,7 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 2. 接入 rpc.ts 的 spawn env 和 backend 生命周期。
 3. workflow 在 Codex child 启动前调用 bind。
 4. 测试 client 实际子进程与 socket 往返，不仅测试 JSON 转换函数。
-5. 完成真实 Codex hook 的 deny/allow 实验；未达到条件时明确留下阻塞项，不宣称完成。
+5. 真实 Codex hook 的 deny/allow 实验已在 P0 完成（Bash + apply_patch 各一次，均被阻断且未落盘）。P3 只需在**本 provider 自己的 client 与 socket 桥**上重做同一闭环，并补 `hooks/list` preflight 与 `hook/started`/`hook/completed` 证据收集。
 
 ### P4：恢复与交接
 
@@ -551,6 +593,11 @@ npm test
 - [ ] complete 拒绝未交付/未处置资源，允许正常 idle 等待。
 - [ ] 两包相关测试通过；真实 Codex Bash/apply_patch 往返至少各验证一次。
 - [ ] 没有实施本方案明确排除的 shell 分析、planner 读取统计、权限重构或 Python 校验迁移。
+- [ ] 已注册子 session 与 manager 的调度类禁令覆盖 `subagent`、`subagent_fork`、`workflow`、`ralph`、`spawn_teammate`、`wait_agent`、`team_task_*`、`codex_workers`、`send_message`、`interrupt_agent`；`mcp__*` 与 `cordis_*` 在 README 明列为不覆盖。
+- [ ] 文件写工具在 `session.header.cwd` 缺失时拒绝，不回退 `process.cwd()`。
+- [ ] DSH guard 的拒绝 reason 以 `workflow gate: ` 开头，可在会话日志中机器识别。
+- [ ] Codex 侧在启用 gated session 前调用 `hooks/list`，条目缺失、未受信任或被禁用时拒绝启动并报告原因。
+- [ ] provider 通过 `hook/started`/`hook/completed` 记录 hook 实际执行证据，能区分「hook 已调用且拒绝」与「Codex 未尝试工具」。
 
 ## 13. 资料索引
 
