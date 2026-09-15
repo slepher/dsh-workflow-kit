@@ -781,6 +781,20 @@ export class WorkflowWorkers {
   }
 
   private context() { const value = this.request.getStore(); if (value === undefined) throw new Error("Managed workflow request context is unavailable"); return value; }
+  /**
+   * The owning Session's workspace.
+   *
+   * A delegation that names no directory runs where its parent runs, which the
+   * caller cannot read from the tool arguments.
+   * @param parentId - the owning DSH Session.
+   * @returns the parent Session's absolute working directory.
+   */
+  parentCwd(parentId: string): string {
+    const cwd = this.parent(parentId).session.header.cwd;
+    if (typeof cwd !== "string" || cwd === "") throw new Error("The owning Session has no workspace to delegate from");
+    return cwd;
+  }
+
   private parent(parentId: string): Agent { this.assertIdentity(); const { parent, session } = this.context(); if (String(session.id) !== parentId) throw new Error("Managed workflow parent identity mismatch"); return parent; }
   private record(parentId: string, id: string): NativeChildRecord { this.parent(parentId); const record = this.store.read().nativeChildren?.[id]; if (record === undefined || record.parentSessionId !== parentId) throw new Error("Managed workflow child not found"); return record; }
   private managed(value: boolean | undefined): void { if (value !== true) throw new Error("Managed workflow child requires codex_workflow"); }

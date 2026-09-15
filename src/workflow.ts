@@ -122,7 +122,8 @@ type ConsultRecord = { id: string; /** Execution the conclusion returns to; a ha
 type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string } & AttemptBinding
 type Lane = { name: string; path: string; owner?: string }
 type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
-export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean }
+export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean;
+  role?: string; worker?: string; stop?: boolean; cwd?: string; name?: string; writes?: readonly string[]; network?: 'disabled' | 'loopback' }
 
 /** Contract state is serialized alongside the existing worker service and directory lock. */
 export class Workflow {
@@ -546,6 +547,47 @@ export class Workflow {
     this.queue=result.catch(()=>{})
     return result
   }
+  /**
+   * Assign a bounded task to one role without adopting a generation.
+   *
+   * This is the delegation half of the workflow contract: roles are this
+   * plugin's content, so the role's protocol is injected as the child's opening
+   * prompt and its configured model/effort are captured from the selected
+   * Profile. What the child may write is only what the caller declares, and a
+   * delegation that declares nothing is read-only. The returned handle is the
+   * same one used to continue or stop it.
+   * @param parent - the owning DSH Session.
+   * @param input - the delegation arguments.
+   * @returns the child's projection, with its latest report when reading state.
+   */
+  private async delegate(parent: string, input: WorkflowAction) {
+    if (input.worker===undefined) {
+      const role=String(input.role??'')
+      if (!role) throw new Error('delegate requires the role to assign the task to; read the roles action for the catalogue')
+      const text=String(input.text??'')
+      if (!text.trim()) throw new Error('delegate requires the task text the child is started with')
+      const cwd=input.cwd??this.workers.parentCwd(parent)
+      if (!isAbsolute(cwd)) throw new Error('delegate cwd must be an absolute directory')
+      const writes=[...(input.writes??[])]
+      if (writes.some(root=>!isAbsolute(root))) throw new Error('delegate writes must name absolute paths')
+      const boundary: Boundary = { cwd, writableRoots: writes, network: input.network??'disabled', ports: {} }
+      const id=randomUUID()
+      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary})
+      return { worker: await this.workers.append(parent,id,text,true) }
+    }
+    const worker=await this.workers.get(parent,input.worker)
+    if (input.stop===true) {
+      if (worker.state==='running'&&worker.turnId) await this.workers.interrupt(parent,worker.id,worker.turnId,true)
+      return { worker: await this.workers.get(parent,worker.id) }
+    }
+    if (String(input.text??'').trim()!=='') {
+      if (worker.state==='running'&&worker.turnId) await this.workers.steer(parent,worker.id,worker.turnId,String(input.text),true)
+      else await this.workers.append(parent,worker.id,String(input.text),true)
+      return { worker: await this.workers.get(parent,worker.id) }
+    }
+    return { worker, report: worker.reports.at(-1)??null }
+  }
+
   private async action(parent: string, input: WorkflowAction) {
     if (!parent || !input || typeof input.action!=='string') throw new Error('Parent and action required')
     if (input.action==='adopt') {
@@ -588,6 +630,7 @@ export class Workflow {
     // Reading the catalogue is not a workflow operation: it answers before any
     // generation is adopted, which is when a caller needs it to choose a role.
     if (input.action==='roles') return ROLES.map(role=>({name:role.name,description:role.description,provider:role.provider,model:role.model,effort:role.effort,implementation:role.implementation}))
+    if (input.action==='delegate') return this.delegate(parent,input)
     if (input.action==='status' && !this.runs.some(r=>r.parent===parent)) return {workflowSkillDir:this.skillRoot,adopted:false}
     const run=this.current(parent)
     if (input.action==='status') { await this.observe(run); return this.summary(run) }

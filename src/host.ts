@@ -49,9 +49,11 @@ export function apply(ctx: Context, config?: Config): void {
     // The role catalogue is this tool's content, so the contract names it: a
     // caller asked for a role-bound child must not have to read the package to
     // learn which roles exist or which tool starts them.
-    description: `Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints. This tool owns the execution role catalogue, and \`dispatch\` starts a child under one of these roles: ${ROLES.map(role => role.name).join(", ")}. \`roles\` lists them with their descriptions. The Codex worker tool starts plain workers and has no roles.`,
+    description: `Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints. This tool owns the execution role catalogue, and \`dispatch\` starts a child under one of these roles: ${ROLES.map(role => role.name).join(", ")}. \`roles\` lists them with their descriptions. \`delegate\` assigns one bounded task to a role directly, without adopting a generation: it returns the child's handle, which the same action continues (send \`text\` again) or stops (\`stop\`). A delegation writes only where \`writes\` names an absolute path, and is read-only without it. The Codex worker tool starts plain workers and has no roles.`,
     parameters: {
-      action: { type: "string", required: true, enum: ["roles", "status", "adopt", "dispatch", "record-result", "accept", "integrate", "resolve", "resolved", "continue", "refresh-integration", "archive", "release"] },
+      action: { type: "string", required: true, enum: ["roles", "status", "adopt", "dispatch", "record-result", "accept", "integrate", "resolve", "resolved", "continue", "refresh-integration", "archive", "release", "delegate"] },
+      role: { type: "string" }, worker: { type: "string" }, stop: { type: "boolean" }, name: { type: "string" }, cwd: { type: "string" },
+      writes: { type: "array", items: { type: "string" } }, network: { type: "string", enum: ["disabled", "loopback"] },
       generation: { type: "string" }, task: { type: "string" }, attempt: { type: "number" }, lane: { type: "string" }, base: { type: "string" }, result: { type: "string" }, text: { type: "string" }, recipient: { type: "string" }, processesStopped: { type: "boolean" },
     },
     output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },

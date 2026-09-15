@@ -58,6 +58,9 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
     "the role catalogue is readable before any generation is adopted");
   assert.match(tools.get("codex_workflow").description, /evidence_runner/,
     "the tool contract names the roles it can dispatch");
+  assert.equal(tools.get("codex_workflow").parameters.properties.action.enum.includes("delegate"), true,
+    "the contract also carries the direct-assignment action");
+  assert.match(tools.get("codex_workflow").description, /assigns one bounded task to a role directly/);
   assert.equal(existsSync(join(stateDir, "orchestration.json")), false, "reading roles writes no orchestration state file");
   const missingParent = await tools.execute({ signal: new AbortController().signal, callId: "no-parent", name: "codex_workflow", arguments: { action: "status" } });
   assert.equal(missingParent.isError, true);
