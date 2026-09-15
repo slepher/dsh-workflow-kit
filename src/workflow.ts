@@ -572,7 +572,7 @@ export class Workflow {
       if (writes.some(root=>!isAbsolute(root))) throw new Error('delegate writes must name absolute paths')
       const boundary: Boundary = { cwd, writableRoots: writes, network: input.network??'disabled', ports: {} }
       const id=randomUUID()
-      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary,delegated:true})
+      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary})
       const started=await this.workers.append(parent,id,text,true)
       return { worker: started, ...this.reply(started) }
     }

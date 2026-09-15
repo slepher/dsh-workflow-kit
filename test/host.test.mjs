@@ -7,7 +7,7 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import AgentRegistry from "@deepseek-ai/dsh-agent";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
-import { apply, delegationNotice, inject, WorkflowStore } from "../lib/index.js";
+import { apply, inject, WorkflowStore } from "../lib/index.js";
 
 test("workflow host leaves the ordinary consumer untouched and activates managed status", async t => {
   const root = mkdtempSync(join(tmpdir(), "workflow-safety-host-"));
@@ -74,68 +74,4 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   assert.ok(ctx.get("codexExecution"), "workflow unload retains the independent provider");
   const afterUnload = await tools.execute({ signal: new AbortController().signal, callId: "ordinary-after", name: "ordinary_sentinel", arguments: {}, agent });
   assert.equal(afterUnload.isError, false); assert.equal(afterUnload.content[0].text, "ordinary-ok");
-});
-
-/**
- * A delegation answers before its child has worked, so the reply has to reach
- * the parent afterwards. The native settlement edge carries it — DSH already
- * wakes the parent there — and this listener is what adds the workflow
- * vocabulary a caller holding only a worker handle can act on.
- */
-test("a settled delegation reports its reply to the parent in workflow vocabulary", async t => {
-  const root = mkdtempSync(join(tmpdir(), "workflow-host-notice-"));
-  const stateDir = join(root, "state");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  // The records are saved before the plugin loads, so its own store reads them
-  // as state a previous turn left behind.
-  const seeded = new WorkflowStore(stateDir);
-  const record = id => ({ id, parentSessionId: "parent", name: "greeter", role: "evidence_runner", profile: "gpt-workflow",
-    execution: { provider: "codex", model: "model-a", reasoningEffort: "medium", developerInstructions: "instructions" },
-    boundary: { cwd: "/work", writableRoots: [] }, dispatches: [], acceptance: {} });
-  seeded.putNativeChild({ ...record("child-delegated"), delegated: true });
-  seeded.putNativeChild(record("child-dispatch"));
-
-  const ctx = new Context(); t.after(() => ctx.fiber.dispose());
-  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
-  class CodexExecution extends Service { constructor(scope) { super(scope, "codexExecution"); } async read() { return undefined; } }
-  class Subagents extends Service { constructor(scope) { super(scope, "subagents"); } }
-  class Connection extends Service { channels = new Map(); constructor(scope) { super(scope, "connection"); }
-    get rpc() { return { handle: (channel, handler) => this.ctx.effect(() => { this.channels.set(channel, handler); return () => this.channels.delete(channel); }) }; } }
-  class WebServer extends Service { constructor(scope) { super(scope, "webServer"); } register() { return () => {}; } }
-  class Sessions extends Service { values = new Map(); constructor(scope) { super(scope, "sessions"); } get(id) { return this.values.get(String(id)); } }
-  await ctx.plugin(CodexExecution); await ctx.plugin(Subagents); await ctx.plugin(Connection); await ctx.plugin(WebServer); await ctx.plugin(Sessions);
-  const injected = [];
-  const scope = ctx.plugin(() => {});
-  const agent = { id: "parent", ctx: scope.ctx, session: { id: "parent", header: { cwd: "/work" } }, status: "idle", followup() {},
-    inject: message => injected.push(message) };
-  ctx.agents.register(agent); ctx.sessions.values.set("parent", agent.session);
-
-  const plugin = await ctx.plugin({ apply, inject }, { stateDir, workflowSkillDir: "/skills/codex-workflow" });
-  await new Promise(resolve => setTimeout(resolve, 0));
-
-  const settled = (id, lastAssistantMessage) => ctx.emit("subagent/end",
-    { runId: `run-${id}`, provider: "spawn", id, local: true, stopReason: "completed", ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage }) });
-  settled("child-delegated", [{ type: "text", text: "3 checks passed" }]);
-  settled("child-dispatch", [{ type: "text", text: "a generation attempt" }]);
-
-  assert.equal(injected.length, 1, "only a delegated child is reported to its parent");
-  assert.equal(injected[0].role, "user");
-  assert.equal(injected[0].source.kind, "plugin");
-  assert.equal(injected[0].source.plugin, "dsh-workflow-kit");
-  assert.equal(injected[0].source.form, "notice", "the notice rides a collapsed row, not a task assignment");
-  const text = injected[0].content.map(block => block.text).join("");
-  assert.match(text, /child-delegated/, "the notice names the worker handle the caller holds");
-  assert.match(text, /evidence_runner/, "and the role it ran as");
-  assert.match(text, /3 checks passed/, "and the reply itself");
-
-  // Reporting nothing is itself the report: the caller is told, instead of
-  // being left with the silence a missing field would produce.
-  settled("child-delegated");
-  assert.equal(injected.length, 2);
-  assert.match(injected[1].content.map(block => block.text).join(""), /reported nothing/);
-
-  assert.match(delegationNotice({ id: "w1", role: "reviewer", name: "verdict" },
-    { stopReason: "aborted", lastAssistantMessage: [] }), /^Workflow worker w1 "verdict" \(reviewer\) ended \(aborted\)\. It reported nothing/,
-    "an abnormal ending is named as one, not as a finish");
-  await plugin.dispose();
 });

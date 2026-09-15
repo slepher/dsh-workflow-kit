@@ -147,12 +147,6 @@ export interface NativeChildRecord {
   handoff?: HandoffRecord;
   /** The handover this child was created to continue, when it is a successor. */
   handoffFrom?: { fromWorker: string; requestId: string };
-  /**
-   * Set when a `delegate` call started this child rather than an adopted
-   * generation. A delegated child has no attempt to poll, so its settlement is
-   * reported to the parent instead of being read out of a run summary.
-   */
-  delegated?: boolean;
   closed?: boolean;
   dispatches: { key: string; text: string; phase: "pending" | "accepted"; previousTurnId?: string; messageId?: string }[];
   acceptance: Record<string, { value: ReportAcceptance; acknowledgedAt?: number }>;
@@ -348,7 +342,7 @@ export class WorkflowWorkers {
     return profile.roles;
   }
 
-  async create(parentId: string, input: Capture & { id?: string; name: string; cwd: string; managed?: boolean; boundary: Boundary; delegated?: boolean }): Promise<WorkerProjection> {
+  async create(parentId: string, input: Capture & { id?: string; name: string; cwd: string; managed?: boolean; boundary: Boundary }): Promise<WorkerProjection> {
     this.parent(parentId); this.managed(input.managed);
     if (!input.id || input.boundary.cwd !== input.cwd) throw new Error("Managed child requires a stable identity and matching workspace");
     const previous = this.store.read().nativeChildren?.[input.id];
@@ -359,7 +353,6 @@ export class WorkflowWorkers {
     }
     this.store.putNativeChild({ id: input.id, parentSessionId: parentId, name: input.name, role: input.role, profile: input.profile,
       execution: structuredClone(input.execution), boundary: structuredClone(input.boundary), dispatches: [], acceptance: {},
-      ...(input.delegated === true ? { delegated: true } : {}),
       ...(input.strategy === undefined ? {} : { strategy: structuredClone(input.strategy) }),
       ...(input.coding === undefined ? {} : { coding: structuredClone(input.coding) }) });
     return this.get(parentId, input.id);

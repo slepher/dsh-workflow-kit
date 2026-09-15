@@ -2,9 +2,6 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type {} from "dsh-codex-app-provider";
 import type {} from "@deepseek-ai/dsh-settings";
-import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
-import { SessionId } from "@deepseek-ai/dsh-session";
-import type { SubagentRunEndInfo } from "@deepseek-ai/dsh-subagent";
 import { installProfileRpc } from "./profile-rpc.js";
 import { WorkflowConfiguration, loadBuiltinProfiles, roleInstructions } from "./configuration.js";
 import { WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, type WorkflowSettings } from "./settings.js";
@@ -17,24 +14,6 @@ export const name = "dsh-workflow-kit";
 export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution"];
 
 export interface Config { stateDir: string; workflowSkillDir?: string; implementationStandardDir?: string; defaultProfile?: string }
-
-/**
- * The model-facing notice one settled delegated child becomes.
- *
- * Deliberately in the workflow's own vocabulary — which worker, which role, what
- * it reported — because the native settlement notice speaks in child session
- * ids, and a caller that cannot tell "it reported" from "it reported nothing"
- * has to spend a turn finding out.
- * @param record - the delegated child's stored identity.
- * @param info - the native settlement edge that closed its Activation.
- * @returns the notice text delivered to the parent.
- */
-export function delegationNotice(record: { id: string; role: string; name: string }, info: SubagentRunEndInfo): string {
-  const outcome = info.stopReason === "completed" ? "finished" : `ended (${info.stopReason})`;
-  const reply = (info.lastAssistantMessage ?? []).map(block => block.type === "text" ? block.text : "").join("").trim();
-  return `Workflow worker ${record.id}${record.name === record.role ? "" : ` "${record.name}"`} (${record.role}) ${outcome}. `
-    + (reply === "" ? "It reported nothing, so do not wait for a reply." : `Its reply:\n${reply}`);
-}
 
 /** Install workflow policy over native DSH children and read-only Codex execution facts. */
 export function apply(ctx: Context, config?: Config): void {
@@ -65,27 +44,12 @@ export function apply(ctx: Context, config?: Config): void {
   installProfileRpc(ctx, catalog, store, defaultProfile);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
   const workflow = new Workflow(consumer, config.workflowSkillDir);
-  // A `delegate` call answers before its child has worked, so the reply has to
-  // reach the parent afterwards. DSH owns that mechanism — a continuable child's
-  // settlement already wakes the parent — and this listener contributes only the
-  // workflow vocabulary, so the caller never spends a turn asking for the reply.
-  // Only delegated children are reported: a generation's attempts are read out
-  // of its own run summary, which the caller already drives.
-  ctx.on("subagent/end", info => {
-    const record = store.read().nativeChildren?.[String(info.id)];
-    if (record?.delegated !== true) return;
-    const parent = ctx.agents.get(SessionId(record.parentSessionId));
-    if (parent === undefined) return;
-    const notice = delegationNotice(record, info);
-    parent.inject(createUserMessage({ content: [{ type: "text", text: notice }],
-      source: { kind: "plugin", plugin: "dsh-workflow-kit", form: "notice", summary: boundContextSummary(notice) } }));
-  });
   ctx.tools.register(defineTool({
     name: "codex_workflow",
     // The role catalogue is this tool's content, so the contract names it: a
     // caller asked for a role-bound child must not have to read the package to
     // learn which roles exist or which tool starts them.
-    description: `Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints. This tool owns the execution role catalogue, and \`dispatch\` starts a child under one of these roles: ${ROLES.map(role => role.name).join(", ")}. \`roles\` lists them with their descriptions. \`delegate\` assigns one bounded task to a role directly, without adopting a generation: pass \`role\` and the prompt as \`text\`. Every result carries the child's handle plus \`reply\`, or \`reply: null\` with the reason there is none — a reply still to come arrives as a settlement notice, so never call \`delegate\` again just to read it. The same action continues the child (send \`text\` again, with \`worker\`) or stops it (\`stop\`). A delegation writes only where \`writes\` names an absolute path, and is read-only without it. Use \`delegate\` — not \`adopt\` — when the caller has no generation directory. The Codex worker tool starts plain workers and has no roles.`,
+    description: `Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints. This tool owns the execution role catalogue, and \`dispatch\` starts a child under one of these roles: ${ROLES.map(role => role.name).join(", ")}. \`roles\` lists them with their descriptions. \`delegate\` assigns one bounded task to a role directly, without adopting a generation: pass \`role\` and the prompt as \`text\`. Every result carries the child's handle plus \`reply\`, or \`reply: null\` with the reason there is none — a child that has not settled yet is announced by the runtime's own settlement notice when it does, so never call \`delegate\` again just to read the reply. The same action continues the child (send \`text\` again, with \`worker\`) or stops it (\`stop\`). A delegation writes only where \`writes\` names an absolute path, and is read-only without it. Use \`delegate\` — not \`adopt\` — when the caller has no generation directory. The Codex worker tool starts plain workers and has no roles.`,
     parameters: {
       action: { type: "string", required: true, enum: ["roles", "status", "adopt", "dispatch", "record-result", "accept", "integrate", "resolve", "resolved", "continue", "refresh-integration", "archive", "release", "delegate"], description: "The operation to perform. `roles` and `status` are reads; every other action starts or settles work." },
       role: { type: "string", description: "`delegate` only: which role the child runs as. Read the `roles` action for the catalogue." },

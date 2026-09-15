@@ -90,11 +90,12 @@ The transport is scripted and the judgement is not:
 
 The flow to drive, and what to judge:
 
-1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` is bound to `gpt-5.6-luna` at medium effort and edits no source, so the pass stays cheap. The result must carry `reply: null` with a note naming the settlement notice; a bare handle is the defect that field replaced.
-2. Confirm the settlement notice names the worker, its role and the reply — and that a child which reported nothing says so instead of leaving a blank. A caller must never need a second call to learn the reply.
-3. Send a second turn on the *same* child with the returned handle — `{ action: "delegate", worker: "<handle>", text: "<a follow-up>" }` — and confirm the reply continues that conversation instead of starting another; on a settled child the result carries `reply` itself.
-4. Stop the current turn with `{ action: "delegate", worker: "<handle>", stop: true }` and confirm the returned child state changes.
-5. Confirm that none of the above demands `adopt` or a `generation`: delegation is the generation-free path.
+1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` is bound to `gpt-5.6-luna` at medium effort and edits no source, so the pass stays cheap. The result must carry `reply: null` with a note saying where the reply will arrive; a bare handle is the defect that field replaced.
+2. Confirm **one** notice settles the child, and that it is the runtime's own — the workflow plugin contributes none, so two notices for one settlement is a defect. It names the child and carries its closing message, or states that the child left none.
+3. Confirm the caller never spends a second call to learn the reply, and that re-reading a settled child with `{ action: "delegate", worker: "<handle>" }` returns `reply` from the durable report — the notice is a wake-up, the report is what survives one that was never delivered.
+4. Send a second turn on the *same* child with the returned handle — `{ action: "delegate", worker: "<handle>", text: "<a follow-up>" }` — and confirm the reply continues that conversation instead of starting another.
+5. Stop the current turn with `{ action: "delegate", worker: "<handle>", stop: true }` and confirm the returned child state changes.
+6. Confirm that none of the above demands `adopt` or a `generation`: delegation is the generation-free path.
 
 Judge the **reply**, not whether the call returned. A defect such as reading `task` where `text` is required, or an error that does not name the field to pass, is visible only in the transcript. Both were found this way; the ones that became assertable are covered by `test/delegate.test.mjs`.
 
