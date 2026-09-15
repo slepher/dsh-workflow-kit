@@ -163,4 +163,8 @@ test("shipped client styles use native tokens and paint the settings-nav glyph",
   assert.ok(source.includes('role: "group"'), "each provider group is a labelled section");
   assert.ok(source.includes('"wf-item-check"'), "the selected route carries a check");
   assert.match(source, /--dsw-specific-menu/);
+  // The settings schema stores one of the named efforts, so the editor has no
+  // "provider default" sentinel to submit: an empty value would be rejected.
+  assert.ok(!source.includes('reasoningEffort: ""'), "the effort menu never stores an empty provider default");
+  assert.ok(!source.includes("effortProviderDefault"), "the removed sentinel leaves no locale key behind");
 });

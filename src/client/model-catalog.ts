@@ -7,6 +7,8 @@ export interface ModelOption {
   model: string;
   name: string;
   efforts: readonly { id: string; name: string }[];
+  /** Adapter-configured default materialized when the caller omits an effort. */
+  defaultEffort?: string;
 }
 
 /** One adapter-owned provider and the models it advertises, in catalog order. */
@@ -39,6 +41,7 @@ export async function loadModelOptions(ctx: Context): Promise<ModelOptions> {
       model: model.id,
       name: model.name,
       efforts: (model.reasoning?.efforts ?? []).map(effort => ({ id: effort.id, name: effort.name })),
+      ...(model.reasoning?.defaultEffort === undefined ? {} : { defaultEffort: model.reasoning.defaultEffort }),
     })),
   }));
   return { groups, partial: response.value.failures.length > 0 };

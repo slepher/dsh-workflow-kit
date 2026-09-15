@@ -12,6 +12,7 @@ import {
   useAnchoredPosition, useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ModelGroup } from "./model-catalog.js";
+import { effortForModelChange, effortLabel } from "./effort.js";
 import type { RoleDraft } from "./settings-controller.js";
 import type { WorkflowLocaleKey } from "./locales.js";
 
@@ -64,19 +65,15 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
   const group = groups.find(candidate => candidate.provider === value.provider);
   const option = group?.models.find(candidate => candidate.model === value.model);
   const modelLabel = option?.name ?? `${value.provider}/${value.model}`;
-  const effortLabel = option?.efforts.find(level => level.id === value.reasoningEffort)?.name
-    ?? (value.reasoningEffort.length > 0 ? value.reasoningEffort : t("effortProviderDefault"));
+  const shownEffort = effortLabel(value.reasoningEffort, option);
 
   const close = (): void => { setOpen(false); };
 
   /** Choose a model, keeping the current effort when the new model still advertises it. */
   const chooseModel = (provider: string, model: string): void => {
     const target = groups.find(candidate => candidate.provider === provider)?.models.find(candidate => candidate.model === model);
-    const effort = target?.efforts.some(level => level.id === value.reasoningEffort) === true
-      ? value.reasoningEffort
-      : target?.efforts[0]?.id ?? "";
     close();
-    void onChange({ provider, model, reasoningEffort: effort });
+    void onChange({ provider, model, reasoningEffort: effortForModelChange(value.reasoningEffort, target) });
   };
 
   return <>
@@ -91,7 +88,7 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
       onClick={() => { setOpen(current => !current); }}
     >
       <span className="wf-trigger-label">{modelLabel}</span>
-      <span className="wf-trigger-value">{effortLabel}</span>
+      <span className="wf-trigger-value">{shownEffort}</span>
       <IconChevronDownOutline14 size={14} />
     </button>
     {open && createPortal(
@@ -110,7 +107,7 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
           </button>
           <button type="button" role="menuitem" className="wf-item" onClick={() => { setPane("effort"); }}>
             <span className="wf-item-label">{t("columnEffort")}</span>
-            <span className="wf-item-value">{effortLabel}</span>
+            <span className="wf-item-value">{shownEffort}</span>
             <IconChevronRightOutline14 size={14} className="wf-item-chevron" />
           </button>
         </>}
@@ -137,16 +134,6 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
         </div>}
 
         {pane === "effort" && <>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={value.reasoningEffort.length === 0}
-            className="wf-item"
-            onClick={() => { close(); void onChange({ ...value, reasoningEffort: "" }); }}
-          >
-            <span className="wf-item-label">{t("effortProviderDefault")}</span>
-            {value.reasoningEffort.length === 0 && <IconCheckOutline14 size={14} className="wf-item-check" />}
-          </button>
           {(option?.efforts ?? []).map(level => {
             const selected = level.id === value.reasoningEffort;
             return <button
