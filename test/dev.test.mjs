@@ -193,7 +193,11 @@ test("late Codex ready during joint shutdown cannot start the W watcher or anoth
 
 test("ordered overlays select the final stateDir owner", async t => {
   if (process.platform !== "linux") return t.skip("live process command lines use Linux /proc");
-  const fixture=devFixture(t), first=join(fixture.root,"first-state"), second=join(fixture.root,"second-state"), p1=join(fixture.root,"one.yml"), p2=join(fixture.root,"two.yml"); for(const path of [first,second]) mkdirSync(path); writeFileSync(p1,`- id: dsh-codex-app-provider\n  config:\n    stateDir: ${first}\n`); writeFileSync(p2,`- id: dsh-codex-app-provider\n  config:\n    stateDir: ${second}\n`); const owner=fixture.startHost(); await waitFor(()=>existsSync(join(fixture.root,"hosts"))); mkdirSync(join(second,"owner.lock")); writeFileSync(join(second,"owner.lock/pid"),String(owner.pid)); const run=fixture.startDev(["--patch",p1,"--patch",p2]); await waitFor(()=>existsSync(join(fixture.root,"workflow-pid"))||run.exitCode!==null); assert.equal(run.exitCode,null,run.output); assert.match(run.output,new RegExp(second)); await stopDev(run); assert.equal(alive(owner.pid),true);
+  const fixture=devFixture(t), first=join(fixture.root,"first-state"), second=join(fixture.root,"second-state"), p1=join(fixture.root,"one.yml"), p2=join(fixture.root,"two.yml"); for(const path of [first,second]) mkdirSync(path); writeFileSync(p1,`- id: dsh-codex-app-provider\n  config:\n    stateDir: ${first}\n`); writeFileSync(p2,`- id: dsh-codex-app-provider\n  config:\n    stateDir: ${second}\n`); const owner=fixture.startHost(); await waitFor(()=>existsSync(join(fixture.root,"hosts"))); mkdirSync(join(second,"owner.lock")); writeFileSync(join(second,"owner.lock/pid"),String(owner.pid)); const run=fixture.startDev(["--patch",p1,"--patch",p2]); await waitFor(()=>existsSync(join(fixture.root,"workflow-pid"))||run.exitCode!==null); assert.equal(run.exitCode,null,run.output);
+  // The owner line is logged after the pid file appears, so wait for the fact
+  // this assertion needs instead of sampling the output at the pid signal.
+  await waitFor(()=>new RegExp(second).test(run.output)||run.exitCode!==null);
+  assert.match(run.output,new RegExp(second)); await stopDev(run); assert.equal(alive(owner.pid),true);
 });
 
 test("an owner appearing before the final check is reused instead of spawning another Host", async t => {
