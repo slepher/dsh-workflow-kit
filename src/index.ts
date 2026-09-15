@@ -28,8 +28,6 @@ export { bindCodingStrategy, bindIntegrateStrategy, sameModel, snapshotProfile, 
 export type { CodingPhase, StrategyBinding, Tier } from "./strategy.js";
 export { WorkflowConfiguration, loadBuiltinProfiles, parseProfile, roleInstructions } from "./configuration.js";
 export type { BuiltinProfiles, CaptureOptions, Profile, RoleExecution, RoleInput, RoleInstructions } from "./configuration.js";
-export { SHIPPED_PROFILES, shippedProfile } from "./profiles.js";
-export type { ShippedProfileId } from "./profiles.js";
 export { SETTINGS_EFFORTS, WorkflowSettingsSchema } from "./settings.js";
 export type { WorkflowSettings } from "./settings.js";
 export type {

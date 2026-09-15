@@ -17,7 +17,6 @@ export interface ConfigView {
   /** Whether this configuration's sup and def coding entries share one provider and model. */
   sameModel: boolean;
   roles: Record<string, RoleView>;
-  missingRequiredRoles: string[];
 }
 
 /** Effective configurations plus the fixed configuration-key catalog. */

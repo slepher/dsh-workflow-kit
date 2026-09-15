@@ -171,7 +171,6 @@ export class WorkflowConfiguration {
           ...row,
           overridden: this.user[id]?.roles[name] !== undefined,
         }])),
-        missingRequiredRoles: CONFIG_KEYS.filter(key => !Object.hasOwn(profile.roles, key)),
       })),
       roleNames: [...CONFIG_KEYS],
       codingKeys: { ...CODING_CONFIG_KEY },

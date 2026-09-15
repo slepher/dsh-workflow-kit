@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WorkflowConfiguration, loadBuiltinProfiles, parseProfile, roleInstructions } from "../lib/configuration.js";
-import { SHIPPED_PROFILES, shippedProfile } from "../lib/index.js";
+import { CONFIG_KEYS } from "../lib/index.js";
 
 /** Deterministic instruction resolver standing in for the installed skills. */
 const instructions = role => `Instructions for ${role}`;
 const profile = roles => ({ roles });
 
-test("the shipped configurations match the role catalog they are generated from", () => {
+test("the shipped configuration files are the only catalog and carry every key", () => {
   const builtin = loadBuiltinProfiles();
-  assert.deepEqual(Object.keys(builtin).sort(), [...SHIPPED_PROFILES].sort());
-  for (const id of SHIPPED_PROFILES) {
-    assert.deepEqual(builtin[id], parseProfile(shippedProfile(id)), `${id} matches its generator`);
+  assert.deepEqual(Object.keys(builtin).sort(), ["ds-workflow", "gpt-workflow"]);
+  for (const [id, builtinProfile] of Object.entries(builtin)) {
+    assert.deepEqual(Object.keys(builtinProfile.roles).sort(), [...CONFIG_KEYS].sort(), `${id} carries the fixed key catalog`);
   }
 });
 
