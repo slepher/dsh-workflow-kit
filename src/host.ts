@@ -7,6 +7,7 @@ import { WorkflowConfiguration, loadBuiltinProfiles, roleInstructions } from "./
 import { WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, type WorkflowSettings } from "./settings.js";
 import { WorkflowStore } from "./store.js";
 import { Workflow } from "./workflow.js";
+import { ROLES } from "./roles.js";
 import { WorkflowWorkers } from "./workers.js";
 
 export const name = "dsh-workflow-kit";
@@ -45,9 +46,12 @@ export function apply(ctx: Context, config?: Config): void {
   const workflow = new Workflow(consumer, config.workflowSkillDir);
   ctx.tools.register(defineTool({
     name: "codex_workflow",
-    description: "Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints.",
+    // The role catalogue is this tool's content, so the contract names it: a
+    // caller asked for a role-bound child must not have to read the package to
+    // learn which roles exist or which tool starts them.
+    description: `Execute an adopted workflow generation with lane, review, integration, acceptance, and release constraints. This tool owns the execution role catalogue, and \`dispatch\` starts a child under one of these roles: ${ROLES.map(role => role.name).join(", ")}. \`roles\` lists them with their descriptions. The Codex worker tool starts plain workers and has no roles.`,
     parameters: {
-      action: { type: "string", required: true, enum: ["status", "adopt", "dispatch", "record-result", "accept", "integrate", "resolve", "resolved", "continue", "refresh-integration", "archive", "release"] },
+      action: { type: "string", required: true, enum: ["roles", "status", "adopt", "dispatch", "record-result", "accept", "integrate", "resolve", "resolved", "continue", "refresh-integration", "archive", "release"] },
       generation: { type: "string" }, task: { type: "string" }, attempt: { type: "number" }, lane: { type: "string" }, base: { type: "string" }, result: { type: "string" }, text: { type: "string" }, recipient: { type: "string" }, processesStopped: { type: "boolean" },
     },
     output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
@@ -58,7 +62,7 @@ export function apply(ctx: Context, config?: Config): void {
         workflow.execute(String(parent.session.id), args));
       return JSON.stringify(result);
     },
-    presentCall: args => ({ card: "generic", title: `Codex workflow: ${args.action}`, kind: args.action === "status" ? "read" : "execute" }),
+    presentCall: args => ({ card: "generic", title: `Codex workflow: ${args.action}`, kind: args.action === "roles" || args.action === "status" ? "read" : "execute" }),
   }));
 }
 

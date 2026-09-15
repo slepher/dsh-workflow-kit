@@ -49,6 +49,16 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   assert.equal(managed.isError, false); assert.deepEqual(JSON.parse(managed.content[0].text), { workflowSkillDir: "/skills/codex-workflow", adopted: false });
   assert.equal(ctx.get("codexKit"), undefined, "native workflow needs no old kit service");
   assert.equal(executionReads, 0, "status without children does not query or start Codex");
+  // A caller choosing a role must get the catalogue and the tool's own contract,
+  // not the package source: this is what the provider-side surface cannot answer.
+  const catalogue = await tools.execute({ signal: new AbortController().signal, callId: "roles", name: "codex_workflow", arguments: { action: "roles" }, agent });
+  assert.equal(catalogue.isError, false);
+  const roles = JSON.parse(catalogue.content[0].text);
+  assert.equal(roles.some(role => role.name === "evidence_runner" && role.description.length > 0), true,
+    "the role catalogue is readable before any generation is adopted");
+  assert.match(tools.get("codex_workflow").description, /evidence_runner/,
+    "the tool contract names the roles it can dispatch");
+  assert.equal(existsSync(join(stateDir, "orchestration.json")), false, "reading roles writes no orchestration state file");
   const missingParent = await tools.execute({ signal: new AbortController().signal, callId: "no-parent", name: "codex_workflow", arguments: { action: "status" } });
   assert.equal(missingParent.isError, true);
   assert.match(missingParent.content[0].text, /live parent agent/);

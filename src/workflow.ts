@@ -585,6 +585,9 @@ export class Workflow {
       const run: Run={id:randomUUID(),parent,plan,lanes:this.runs.find(r=>dirname(r.plan.generation)===dirname(plan.generation))?.lanes??[],attempts:[]}
       this.runs.push(run);this.save();return this.summary(run)
     }
+    // Reading the catalogue is not a workflow operation: it answers before any
+    // generation is adopted, which is when a caller needs it to choose a role.
+    if (input.action==='roles') return ROLES.map(role=>({name:role.name,description:role.description,provider:role.provider,model:role.model,effort:role.effort,implementation:role.implementation}))
     if (input.action==='status' && !this.runs.some(r=>r.parent===parent)) return {workflowSkillDir:this.skillRoot,adopted:false}
     const run=this.current(parent)
     if (input.action==='status') { await this.observe(run); return this.summary(run) }
