@@ -84,6 +84,51 @@ export interface ThreadHandoffService {
   read?(nativeSessionId: string): Promise<ThreadOwnership | undefined>;
 }
 
+/**
+ * The provider's workflow gate surface, as published on `ctx.codexToolGate`.
+ *
+ * Declared structurally for the same reason as the thread handover above: this
+ * plugin has to load and build against a provider package that predates the
+ * capability, and then refuse a Codex child it cannot gate rather than run it
+ * unchecked. The shapes are the provider's `GateBinding`/`GateEvent`/`GateDecision`.
+ */
+export interface GateBinding {
+  /** Host business label; the provider never enumerates or interprets it. */
+  role: string;
+  /** The registered handler this Session's operations are checked by. */
+  hook: string;
+  /** Host-owned JSON arguments describing the Session's authorization. */
+  args: Record<string, unknown>;
+}
+
+/** One operation about to execute, from either entry point. */
+export interface GateEvent {
+  source: "dsh" | "codex";
+  /** DSH Session identity, resolved by the Host; never taken from a payload. */
+  sessionId: string;
+  callId: string;
+  /** Trusted Session/operation working directory. */
+  cwd: string;
+  toolName: string;
+  /** The complete original tool arguments, preserved for the handler. */
+  toolArgs: unknown;
+}
+
+export type GateDecision =
+  | { kind: "allow" }
+  | { kind: "deny"; reason: string };
+
+export type GateHandler = (
+  binding: Readonly<GateBinding>,
+  event: Readonly<GateEvent>,
+) => GateDecision;
+
+/** The Host-facing gate capability the Codex provider publishes. */
+export interface CodexToolGate {
+  register(hook: string, handler: GateHandler): () => void;
+  bind(sessionId: string, binding: GateBinding): void;
+}
+
 export interface WorkflowState {
   runs: unknown[];
   lanes: { path: string; owner?: string }[];

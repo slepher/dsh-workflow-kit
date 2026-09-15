@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { readGateArgs } from "./gate.js";
 import type { WorkflowState } from "./types.js";
 
 export class WorkflowStore {
@@ -107,8 +108,24 @@ function parse(text: string): WorkflowState {
       const entry = record.coding?.[tier as "def" | "sup"];
       return typeof entry?.provider === "string" && typeof entry.model === "string" && typeof entry.reasoningEffort === "string";
     })) throw new Error(`Invalid native child coding snapshot: ${id}`);
+    if (record.gate !== undefined && !validGate(record.gate)) throw new Error(`Invalid native child gate binding: ${id}`);
   }
   return { runs: value.runs, lanes: value.lanes, ...(value.selectedProfiles === undefined ? {} : { selectedProfiles: value.selectedProfiles }),
     ...(value.sessionStrategies === undefined ? {} : { sessionStrategies: value.sessionStrategies }),
     ...(value.nativeChildren === undefined ? {} : { nativeChildren: value.nativeChildren }) };
+}
+
+/**
+ * A recorded gate is optional as a whole, but never partially malformed or
+ * unreadable. A child whose binding cannot be interpreted is refused instead of
+ * being resumed as if it had never been gated.
+ * @param value - the stored binding.
+ * @returns whether the binding can be enforced exactly as recorded.
+ */
+function validGate(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const gate = value as { role?: unknown; hook?: unknown; args?: unknown };
+  if (typeof gate.role !== "string" || gate.role.length === 0) return false;
+  if (typeof gate.hook !== "string" || gate.hook.length === 0) return false;
+  return readGateArgs(gate.args) !== undefined;
 }

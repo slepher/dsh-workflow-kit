@@ -14,7 +14,7 @@
 6. 首版只检查已知工具、明确文件操作与明确角色禁令。**不分析任意 shell 程序实际写了哪些文件。**
 7. 首版不做 planner 读取量统计、自动告警、命令重写、审批升级或通用策略 DSL。
 8. 提交、合并、抛弃、释放仍由已有 workflow 动作处理。新增一个明确的工作流完成检查，不能把正常 idle 等待当作完成。
-9. 不执行 `gate-migrate.md` 的 Python → TS 迁移、格式删门、native 角色统一或哈希复检。该文件是此前讨论材料，本文规定本次实施范围。
+9. 不执行 `gate-migrate.md` 的整套迁移：不迁 Python → TS、不统一 native 角色、不加哈希复检。当前 gate 的清理只执行本文 §14 的明确清单，不从旧方案追加删除项。
 
 ### 0.1 修订记录 R1：实现前核实出的缺口与已定决策
 
@@ -47,6 +47,7 @@
 - 已提交：`8dd2f95` 计划文档入库；`b2ea041` 按 P0 实测与 D1–D10 修订本文。两包工作树在该提交时干净。
 - 已完成：P0（见 §9 实测结论）。**P1a 尚未开始**——第一次写入 provider 仓库被沙箱拒绝，未留下任何半成品文件。
 - 未开始：P1a/P1b/P1c、P2、P3、P4、P5。
+- 本次文档追加：P6（§14，清理当前 gate）；尚未执行代码清理。R1 的 denylist、hook 信任与 preflight 决策保持不变。
 
 ## 1. 范围与完成含义
 
@@ -88,6 +89,7 @@ DSH 已有的 sandbox 和结果 diff 检查继续生效；本次不新增一套�
 | `dsh-workflow-kit/src/workers.ts`：`create()`、`append()`、handoff/consult 路径 | 保存子身份并启动 native child | 保存绑定；启动前向 provider 登记；后继沿用绑定 |
 | `dsh-workflow-kit/src/workflow.ts` | 分配任务、lane、结果、集成、释放 | 根据实际分配构造 gate args；管理 manager 绑定；complete 检查 |
 | `dsh-workflow-kit/src/store.ts`、`src/types.ts` | workflow/child 持久化 | 保存和校验可选 gate；兼容旧记录 |
+| `dsh-workflow-kit/scripts/workflowctl.py` | Markdown 读取、DSH 投影和结果身份检查 | P6 仅删除 §14 指定的作者格式门与静态重复预检，保留现有 CLI 和 Host 调用 |
 | `dsh-codex-app-provider/src/tool-gate.ts`（新增） | 无 | provider 的公开类型、具名 handler 注册、待启动绑定和 IPC 接收 |
 | `dsh-codex-app-provider/src/pretool-client.ts`（新增） | 无 | hook command；只做 stdin/IPC/stdout 转换 |
 | `dsh-codex-app-provider/src/index.ts`：`apply()` | provider Host 服务安装 | 提供 `ctx.codexToolGate`、创建/释放桥、导出类型 |
@@ -499,6 +501,13 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 3. 明确 shell 分析、planner 读取告警和 hook 特殊路径不在覆盖范围。
 4. 按 §11 完成测试与打包内容检查，给出最终修改列表、测试证据和部署状态。
 
+### P6：清理当前 gate
+
+1. P1–P5 的对应接入和验收完成后，执行 §14 的 C01–C08 清单；不删除整份 Python 工具，不扩展为校验器迁移。
+2. 保留 §14.3 指定的输入解释、身份、动态资源与交付检查。已知 shell 副作用未被 PreToolUse 覆盖，结果 diff 门不能删除。
+3. 增加 §14.5 的放宽行为及保留行为测试，清理本包重复要求 agent 手动校验的说明。
+4. 按 §14.6 完成检查，将“已删项、保留项、未触及的外部 native 路径”作为最终交付说明的一部分。
+
 ## 10. 固定验收用例
 
 ### 10.1 规则测试：`dsh-workflow-kit/test/gate.test.mjs`
@@ -682,6 +691,8 @@ npm test
 - [ ] DSH guard 的拒绝 reason 以 `workflow gate: ` 开头，可在会话日志中机器识别。
 - [ ] Codex 侧在启用 gated session 前调用 `hooks/list`，条目缺失、未受信任或被禁用时拒绝启动并报告原因。
 - [ ] provider 通过 `hook/started`/`hook/completed` 记录 hook 实际执行证据，能区分「hook 已调用且拒绝」与「Codex 未尝试工具」。
+- [ ] §14 的 C01–C08 清理及对应测试完成；已删的格式门没有在 TS、hook、告警或 prompt 中重新成为必经步骤。
+- [ ] Python CLI、结果身份、动态占用、结果 diff、review、交付与释放检查仍有效；外部 native skill 未被修改。
 
 ## 13. 资料索引
 
@@ -691,3 +702,115 @@ npm test
 - [当前 provider thread 参数与审批入口](../dsh-codex-app-provider/src/backend.ts)
 - [workflow 子 session 创建与交接](src/workers.ts)
 - [workflow 任务、lane、集成和释放](src/workflow.ts)
+
+## 14. 清理当前 gate（P6）
+
+### 14.1 目标与范围
+
+新 gate 落地后，不能只增加一次 PreToolUse 检查，同时继续要求 agent 通过所有旧格式门。本阶段删除明确妨碍流程的作者格式约束和静态重复预检；语义判断留给 planner/worker/reviewer，执行范围检查留在操作前，结果归属与交付检查留在 Host 的对应动作中。
+
+本阶段仅修改 `dsh-workflow-kit`：
+
+- `scripts/workflowctl.py`：执行下表指定的删除，不重写解析器、不换语言。
+- `src/workflow.ts`：仅清理重复的作者预检指令；保留现有 `python('export-dsh', ...)` 和 `python('result-check', ...)` 调用。
+- `src/prompts/worker-execution.md`、`src/prompts/role-planner.md`、`README.md`：明确 DSH 不要求 agent 先手动跑一次 CLI；构建生成 `src/generated/prompts.ts`，不手改生成文件。
+- 新增 `test/workflowctl.test.mjs`；必要时给现有 `test/workflow.test.mjs` 补 Host 侧行为用例。
+
+不修改 provider、DSH core、`~/.codex/skills/codex-workflow`、旧 `dsh-subagents-codex` 或 `dsh-codex-kit-backend`。外部 native CLI 仍有自己的调用者和规则，本阶段不要求两端同过同拒。
+
+### 14.2 固定删除清单
+
+| ID | 当前位置/定位字符串 | 执行修改 | 清理后的行为 |
+|---|---|---|---|
+| C01 | `contract()` 中 `for heading in ("Goal", "Acceptance", "Constraints", "Validation", "Return when")` | 删除整段必需章节及章节非空检查 | 合同可用其他标题或连续正文表达任务；不因少一节/空一节拒绝 adopt 或 record-result |
+| C02 | `validate()` 中 `{"Goal", "Acceptance"} <= sections.keys()` | 删除 plan 的固定章节名要求 | plan 的目标与验收仍由 planner 提供，但不以 Markdown 标题拼写作为运行前置 |
+| C03 | `contract()` 中 `no-lane task requires explicit Read paths` 及 Read paths 的 `scope()` 检查 | 删除必须显式提供 Read paths 的条件；将 Read paths 从路径写权限校验循环中分离 | 缺省仍由 export_dsh 输出 `["."]`；提供时只校验 JSON 字符串数组。不再把读范围说明当成实际读权限 |
+| C04 | `array()` 中 `duplicate ... entries` | 仅删除重复元素拒绝 | 合法字符串重复不报错；返回原数组，不另加静默去重、排序或重写合同 |
+| C05 | `contract()` 中 `duplicate normalized ownership` | 删除归一化后重复拒绝，保留每项 `scope()` | `src` 与 `src/` 等等价写法不因重复而失败；不允许借此放过绝对路径、`..` 或通配路径 |
+| C06 | `validate()` 末尾 `for left, a in contracts.items()` 的两两 ownership 重叠拒绝 | 删除该任务对比循环及其独占使用的 `contracts` 收集；保留依赖检查和 `visit()` 环检测 | 两个无依赖任务可以先后使用同一路径；实际占用由 dispatch 决定，不在计划发布时一律判死 |
+| C07 | `result_check()` 中 `result filename does not match Task/Attempt` | 删除结果文件名模式检查 | 结果文件叫什么不决定身份；Task/revision 仍对保留合同校验，Attempt/Input/Candidate 仍按各自 Host 检查绑定 |
+| C08 | `contract()` 中 `Inputs must bind evidence` | 删除 Inputs 数组必须非空的条件；保留该机器字段和数组类型检查 | `Inputs: []` 可表示没有额外输入；Host 仍冻结并校验实际 input base，不为过门编造一项证据 |
+
+删除规则：
+
+1. 清单是完整范围。执行者不得因为“新 gate 已有了”而删除其他条件。
+2. 已删条件不改成默认告警、不要求 agent 确认、不搬入 gate.ts，不在 prompt 中要求先修复才允许继续。
+3. 保留 prose 原文、机器字段和导出字段名称。C01/C02 不代表删除目标与验收内容，也不允许 agent 因此降低原任务要求。
+4. C03 只放宽 Read paths；Write paths、Reports、Ports、Cwd 的当前解析/校验不在此删除项中。
+5. C06 的删除不要求另造依赖图算法。保留现有 cycle detection；只移除末尾静态 overlap 与明确无剩余用途的变量。
+6. C08 不删除 Host 对已声明 Inputs 的可用性检查，也不删除 result 的 Input snapshot 必需字段。
+
+### 14.3 明确保留的当前 gate
+
+| 保留项 | 当前归属 | 保留原因 |
+|---|---|---|
+| 缺机器字段、非 JSON 数组、非字符串元素、非法执行枚举/数值 | `workflowctl.py` 的 `required()`、`positive()`、`array()`、contract/plan/policy 读取 | 现有消费者必须能无歧义地读出数据；不是额外作者流程 |
+| 重复机器 field/section 拒绝、围栏跳过、反引号处理 | `read()` | 本次不重写解析器，不引入“取第一项还是最后一项”的新语义 |
+| `scope()`、`within()`、Host `scoped()` | Python 读取及 Host 分配 | 前者拒绝非法输入/逃逸，后者绑定实际工作区；不因有 hook 就放任错误路径进入状态 |
+| generation 布局、Repository/Target/Base、Lane/Cwd、容量与支持的 integration 策略 | `validate()`、`export_dsh()`、adopt/dispatch | 现有执行器真实依赖；本次不重新设计 Plan/Task |
+| workflow execution Role 与旧合同读取兼容、implementation/只读角色检查 | Python contract、Host capture/delegationCapture | 新 gate.role 是标签，不替代实际执行角色解析；旧记录仍需读取 |
+| contract/index revision、adopt 的 revision 约束、未知/retired 依赖与环 | Python validate、Host adopt | 防止错版本执行与不可满足的依赖，不属于格式摩擦 |
+| Task/revision/Attempt/Input/Candidate/Outcome 绑定 | Python result_check 与 Host record-result | 防止将其他任务/attempt/提交的结果接收为本次结果；文件名检查删除不等于身份检查删除 |
+| 实时 ownership/resource 占用、容量、base 与依赖候选可见性 | Host dispatch | C06 只删静态拒绝；运行中的冲突仍必须挡住 |
+| candidate commit/HEAD/ancestor、实际变更路径、integration repair 的实际 diff 检查 | Host record-result/resolved | shell 可产生未经过文件工具的写入，PreToolUse 不构成这些结果检查的替代 |
+| required review、组合候选/target 身份、Git clean、交付验证 | Host accept/integrate | 新 hook 不判断业务正确性，也不证明候选已交付 |
+| archive 的 reviewer disposition、release 的状态/进程确认、§8 complete | Host 生命周期动作 | 防止未决定的 lane 被释放、抛弃结果被当成功、未交付就完成 |
+| 新 gate 的绑定一致性、hook preflight、回调失败 deny | 本文 P1–P4 | 这是新执行前校验成立的必要接线，不属于要清理的旧格式门 |
+
+保持 `Workflow.python()`、`DSH_ROLE_PROFILES` 注入及 Python 3 依赖声明。它们仍被 adopt/result-check 使用，不能为“清理”删掉却没有消费者替代。
+
+保留本包 `validate`、`export-dsh`、`result-check` 和 `--review` CLI 参数。Host 不传 `--review` 不等于所有 CLI 调用者都不存在；本阶段不移除 CLI 接口，也不触碰外部 native 的 review 使用方式。
+
+### 14.4 清理重复人工预检与临时机制
+
+按以下固定操作处理：
+
+1. `workflow.ts` 的 adopt 参数错误文案中，将 `Author and validate that directory with the workflow skill` 改为 `Author that directory with the workflow skill; adopt validates the required execution fields`。保留绝对路径和布局要求。
+2. `worker-execution.md` 的 DSH override 中明确：受管 DSH 路径由 Host 执行输入、身份与执行前 gate；不要求先跑 `workflowctl.py validate/result-check`，也不要求直接调用新的 pretool-client。
+3. `role-planner.md` 明确：提交已编写的计划供 adopt 读取，不为复刻 Host 校验额外安排 evidence_runner 或创建“验证合同格式”任务。CLI 可由明确的诊断任务使用，不是所有任务的必经步骤。
+4. 不编辑外部 native skill 来达到前述效果；利用现有 DSH override 的优先级。README 写明该差异，避免把 DSH 的规则错误推广到 native 路径。
+5. P0/P3 的探针 hook、marker、临时 socket、测试 trust 条目按原实验 teardown 清理；只处理该实验创建且能确认归属的对象。不能按 `PreToolUse`、插件名或文件前缀批量删除第三方 hook。
+6. 正式 provider hook 保留；恢复的用户配置、已有 hook/trust、历史 attempts/contracts/results、Git 保留引用不得作为“旧 gate”删除。P0 已完成且已回滚时，不为了清理重新执行实验。
+7. 如果实施中临时加过双重校验、影子比较、fallback 开关或 hook 中的 workflow 规则副本，在对应新路径验收后删除；没有这些产物就跳过，不为满足清单新增后再删。
+
+这里的“单一规则”指两条 PreToolUse 入口共用同一个业务判断；不要求把所有输入读取和结果验收也合并进 PreToolUse。
+
+### 14.5 清理验收
+
+新增 `test/workflowctl.test.mjs`，使用现有 Node `node:test` + 临时 generation fixture，通过 `python3 scripts/workflowctl.py` 执行本包 CLI；测试进程按现有 Host 方式提供 DSH_ROLE_PROFILES。不增加 Python 测试框架，不复制外部 native test 文件。
+
+| ID | 场景 | 预期 |
+|---|---|---|
+| C-T01 | 机器字段完整，但合同/plan 未使用固定 Goal/Acceptance 等标题，或有空的 prose section | validate/export-dsh 成功；导出原文保持不变 |
+| C-T02 | no-lane + 明确 Cwd，未写 Read paths | 成功，导出 reads 默认 `["."]` |
+| C-T03 | 提供合法字符串数组 Read paths，含绝对路径说明或通配说明；再提供非法 JSON/非字符串元素 | 前者成功；后者仍拒绝；不改变 Write paths 的规则 |
+| C-T04 | 数组有重复项，Owned paths 含归一化后重复项 | 成功；真实非法 owned 路径仍拒绝 |
+| C-T05 | 两个 executable task 无依赖、owned 相同 | adopt 成功；第一个未 release 时第二个 dispatch 仍被 Host 拒绝；按现有流程 release 后第二个可以派发 |
+| C-T06 | Inputs 为 `[]` | export/adopt 成功；Host result 的错误 Input snapshot 仍被拒绝 |
+| C-T07 | 合法结果使用任意 basename，配合法保留合同 | 本包 result-check 成功；更改 Task 或 Contract revision 后仍拒绝 |
+| C-T08 | 错 Attempt、错误/不属于 workspace 的 Candidate、shell 产生越界产品变更 | Host record-result 仍拒绝；不能只测试 Python 认为结构合法 |
+| C-T09 | 未知依赖、retired 依赖、依赖环、contract/index revision 不一致 | 仍拒绝 |
+| C-T10 | required review 未通过、未交付 release、discarded + released 被当完成 | 对应 Host 动作仍拒绝 |
+
+其中 C-T05/C-T06/C-T08/C-T10 的 Host 行为优先扩展或复用现有 `test/workflow.test.mjs`；已有对应覆盖且预期一致时直接复用，不重复搭建一整套 fixture。
+
+保留一份使用旧完整章节的合法 fixture，证明格式放宽后旧任务仍可读取；不要求篡改历史合同来适配新规则。
+
+### 14.6 执行顺序与完成条件
+
+1. 阅读 `scripts/workflowctl.py` 及两个 Host 调用点，逐项定位 C01–C08；发现代码已变动时按符号/行为对应，不按旧行号删除。
+2. 先补清理用例：新放宽用例在修改前应被相应旧 gate 拒绝；保留行为用例应通过其原有预期。
+3. 只删除清单中的条件和失去唯一用途的局部变量，不重写 CLI，不引入 TS 解析副本。
+4. 修改 §14.4 的本包说明，运行构建重新生成 prompt。
+5. 在 `dsh-workflow-kit/` 逐个运行：
+
+```bash
+npm run build
+node --test test/workflowctl.test.mjs test/workflow.test.mjs
+npm test
+```
+
+6. 检查 diff：C01–C08 均有对应删除；§14.3 的检查未被削弱；没有触及 provider、native skill 或用户 hook 配置。文档不再声称本阶段移除了 Python 依赖。
+7. 此阶段不修改 provider/hook 协议，因此不重复真实 Codex gate 实验，复用 P3/P4 已记录的证据。若实际修改了该协议，应先撤回超范围改动，而不是扩大本阶段测试范围。
+
+完成条件：放宽项在实际 CLI/Host 路径上不再阻塞；身份、动态占用和交付门仍挡住对应错误；agent 不再被要求重复运行手工预检；已有记录、外部 native 行为和第三方 hook 保持原状。

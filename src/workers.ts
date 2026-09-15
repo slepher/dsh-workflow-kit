@@ -9,7 +9,7 @@ import * as subagentInternal from "@deepseek-ai/dsh-subagent/internal";
 import type { NativeExecution, NativeExecutionReport } from "dsh-codex-app-provider";
 import type { WorkflowStore } from "./store.js";
 import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
-import type { Boundary, ChildAgentOptions, ThreadHandoffService } from "./types.js";
+import type { Boundary, ChildAgentOptions, GateBinding, ThreadHandoffService } from "./types.js";
 import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
 import { bindCodingStrategy, snapshotProfile, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
 import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
@@ -139,6 +139,12 @@ export interface NativeChildRecord {
   profile: string;
   execution: RoleExecution;
   boundary: Boundary;
+  /**
+   * The workflow gate this child runs under, fixed at creation. Absent only on
+   * records created before the gate existed; the guard then leaves the child
+   * unchecked rather than inventing a historical scope for it.
+   */
+  gate?: GateBinding;
   /** Coding/integrate strategy binding; absent on records dispatched before strategies existed. */
   strategy?: BoundStrategy;
   /** Sup/def Profile snapshot captured at dispatch; later Profile or setting edits never rewrite it. */
