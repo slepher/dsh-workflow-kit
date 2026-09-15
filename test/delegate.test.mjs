@@ -22,8 +22,8 @@ test("delegate assigns one role task without a generation and keeps its handle",
 
   // No generation is adopted: the catalogue and delegation both answer directly.
   const started = await action({ action: "delegate", role: "evidence_runner", text: "Run the acceptance check." });
-  assert.equal(typeof started.worker.id, "string");
-  assert.equal(started.worker.role, "evidence_runner");
+  assert.equal(typeof started.child.id, "string");
+  assert.equal(started.child.role, "evidence_runner");
   assert.equal(f.calls.length, 1, "one delegation starts one native child");
   const opening = f.promptText(f.calls[0]);
   assert.match(opening, /Execute evidence_runner/, "the role's protocol is the child's opening prompt");
@@ -34,24 +34,24 @@ test("delegate assigns one role task without a generation and keeps its handle",
     "an undeclared delegation is read-only in the parent's workspace");
 
   // A second task while the child runs steers the active turn, not a new child.
-  await action({ action: "delegate", worker: started.worker.id, text: "Also record the exit status." });
+  await action({ action: "delegate", child: started.child.id, text: "Also record the exit status." });
   assert.equal(f.calls.length, 2, "a running delegation is steered rather than restarted");
-  assert.equal(f.calls[1].id, started.worker.id);
+  assert.equal(f.calls[1].id, started.child.id);
   assert.equal(f.calls[1].delivery, "steer");
 
   // Reading the handle reports the child's state and its latest report.
   const idle = await f.run(async () => {
-    f.finish(started.worker.id, "- Outcome: complete");
-    return workflow.execute("parent", { action: "delegate", worker: started.worker.id });
+    f.finish(started.child.id, "- Outcome: complete");
+    return workflow.execute("parent", { action: "delegate", child: started.child.id });
   });
-  assert.equal(idle.worker.state, "idle");
+  assert.equal(idle.child.state, "idle");
   assert.equal(idle.report.result, "- Outcome: complete");
 
   // Stopping targets the running turn, and an idle child is left alone.
-  await action({ action: "delegate", worker: started.worker.id, stop: true });
+  await action({ action: "delegate", child: started.child.id, stop: true });
   assert.equal(f.calls.some(call => call.interrupt === true), false, "an idle child is not interrupted");
-  await f.run(async () => { f.facts.get(started.worker.id).state = "running"; });
-  await action({ action: "delegate", worker: started.worker.id, stop: true });
+  await f.run(async () => { f.facts.get(started.child.id).state = "running"; });
+  await action({ action: "delegate", child: started.child.id, stop: true });
   assert.equal(f.calls.some(call => call.interrupt === true), true, "a running delegation can be stopped");
 });
 
@@ -72,8 +72,8 @@ test("a delegation states its reply, or why there is none", async t => {
 
   // A settled child's report text is its reply.
   const reported = await f.run(async () => {
-    f.finish(started.worker.id, "- Outcome: complete");
-    return action({ action: "delegate", worker: started.worker.id });
+    f.finish(started.child.id, "- Outcome: complete");
+    return action({ action: "delegate", child: started.child.id });
   });
   assert.equal(reported.reply, "- Outcome: complete");
   assert.equal(reported.note, undefined, "a reply needs no explanation");
@@ -82,8 +82,8 @@ test("a delegation states its reply, or why there is none", async t => {
   // nothing rather than being handed a null it cannot read.
   const blank = await action({ action: "delegate", role: "evidence_runner", text: "Run the blank check." });
   const empty = await f.run(async () => {
-    f.finish(blank.worker.id, "   ");
-    return action({ action: "delegate", worker: blank.worker.id });
+    f.finish(blank.child.id, "   ");
+    return action({ action: "delegate", child: blank.child.id });
   });
   assert.equal(empty.reply, null);
   assert.notEqual(empty.report, null, "the empty report stays the evidence for the missing reply");
@@ -91,9 +91,9 @@ test("a delegation states its reply, or why there is none", async t => {
 
   // Settling with no report at all reads differently from still running.
   const silent = await action({ action: "delegate", role: "evidence_runner", text: "Run the silent check." });
-  f.facts.get(silent.worker.id).state = "idle";
-  f.ctx.agents.delete(silent.worker.id); f.ctx.sessions.delete(silent.worker.id);
-  const settled = await action({ action: "delegate", worker: silent.worker.id });
+  f.facts.get(silent.child.id).state = "idle";
+  f.ctx.agents.delete(silent.child.id); f.ctx.sessions.delete(silent.child.id);
+  const settled = await action({ action: "delegate", child: silent.child.id });
   assert.equal(settled.reply, null);
   assert.match(settled.note, /settled without reporting/);
   assert.notEqual(settled.note, started.note, "a finished child is not reported as a pending one");
@@ -119,5 +119,5 @@ test("delegate refuses what it cannot execute as asked", async t => {
   // A declared write scope is exactly what the child receives.
   const writing = await action({ action: "delegate", role: "coding_worker", text: "Patch the file.", writes: [cwd], network: "loopback" });
   assert.deepEqual(f.calls.at(-1).options.execution.boundary, { cwd, writableRoots: [cwd], network: "loopback" });
-  assert.equal(writing.worker.id.length > 0, true);
+  assert.equal(writing.child.id.length > 0, true);
 });

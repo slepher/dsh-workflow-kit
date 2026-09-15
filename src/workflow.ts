@@ -123,7 +123,7 @@ type Attempt = { supersededRevision?: number; task: Task; number: number; worker
 type Lane = { name: string; path: string; owner?: string }
 type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
 export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean;
-  role?: string; worker?: string; stop?: boolean; cwd?: string; name?: string; writes?: readonly string[]; network?: 'disabled' | 'loopback' }
+  role?: string; child?: string; stop?: boolean; cwd?: string; name?: string; writes?: readonly string[]; network?: 'disabled' | 'loopback' }
 
 /** Contract state is serialized alongside the existing worker service and directory lock. */
 export class Workflow {
@@ -561,7 +561,7 @@ export class Workflow {
    * @returns the child's projection, plus its reply or the reason there is none yet.
    */
   private async delegate(parent: string, input: WorkflowAction) {
-    if (input.worker===undefined) {
+    if (input.child===undefined) {
       const role=String(input.role??'')
       if (!role) throw new Error('delegate requires the role to assign the task to; read the roles action for the catalogue')
       const text=String(input.text??'')
@@ -574,21 +574,21 @@ export class Workflow {
       const id=randomUUID()
       await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary})
       const started=await this.workers.append(parent,id,text,true)
-      return { worker: started, ...this.reply(started) }
+      return { child: started, ...this.reply(started) }
     }
-    const worker=await this.workers.get(parent,input.worker)
+    const child=await this.workers.get(parent,input.child)
     if (input.stop===true) {
-      if (worker.state==='running'&&worker.turnId) await this.workers.interrupt(parent,worker.id,worker.turnId,true)
-      const stopped=await this.workers.get(parent,worker.id)
-      return { worker: stopped, ...this.reply(stopped) }
+      if (child.state==='running'&&child.turnId) await this.workers.interrupt(parent,child.id,child.turnId,true)
+      const stopped=await this.workers.get(parent,child.id)
+      return { child: stopped, ...this.reply(stopped) }
     }
     if (String(input.text??'').trim()!=='') {
-      if (worker.state==='running'&&worker.turnId) await this.workers.steer(parent,worker.id,worker.turnId,String(input.text),true)
-      else await this.workers.append(parent,worker.id,String(input.text),true)
-      const current=await this.workers.get(parent,worker.id)
-      return { worker: current, ...this.reply(current) }
+      if (child.state==='running'&&child.turnId) await this.workers.steer(parent,child.id,child.turnId,String(input.text),true)
+      else await this.workers.append(parent,child.id,String(input.text),true)
+      const current=await this.workers.get(parent,child.id)
+      return { child: current, ...this.reply(current) }
     }
-    return { worker, ...this.reply(worker) }
+    return { child, ...this.reply(child) }
   }
 
   /**
