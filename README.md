@@ -59,6 +59,8 @@ Deliberately **not** covered, and not claimed: file effects inside a shell progr
 
 A denial always starts with `workflow gate: `, so it is machine-recognizable in a session log. A Session with no binding — an ordinary delegation, a legacy record written before the gate existed — is untouched.
 
+One boundary is worth stating because it is easy to misread as a gate bug. The check compares the operation's cwd with the cwd the binding recorded, and refuses rather than rewriting it. For a Codex child that recorded cwd is the thread's execution cwd, which is the lane. For a **DSH-native** child the stock subagent runtime copies the *parent's* workspace into the child Session header, so a native lane worker's relative writes resolve against the repository rather than the lane and are refused (fail-closed); its absolute lane paths stay authorized by their grants. The shipped configurations all run the `codex` provider, where the two cwds agree; a deployment that binds a native provider to lane tasks should give those tasks absolute write paths or run them without a lane.
+
 `status` reports `complete` and `pendingDisposition`; `complete` performs the same check and refuses with the outstanding disposition (task, attempt, lane or child, state and the existing next action) instead of guessing. It performs no Git operation: delivery, merge, archive and release stay with their existing actions, and a manager waiting on a running child may still end its turn.
 
 ## Execution control and cost
