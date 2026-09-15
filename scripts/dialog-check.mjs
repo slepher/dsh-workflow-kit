@@ -27,7 +27,7 @@
  *   DSH_HOME   Harness home holding the Session logs; defaults to ~/.dsh.
  *   DSH_TIMEOUT_MS  how long to wait for the turn; defaults to 180000.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,16 +72,30 @@ async function call(endpoint, args) {
 /**
  * Read one Session's durable log, which is what the dialog renders.
  *
- * The log is a concatenation of independently flushed zstd frames, so a single
- * `zstdDecompressSync` call would decode only the first one. Frames are split on
- * their magic number and decoded one by one; a frame still being appended fails
- * and is skipped rather than discarding the whole transcript.
+ * The Harness encodes a Session's workspace directory into its log path, and
+ * that encoding is its business: this locates the Session by asking the sessions
+ * root which directory holds it, instead of predicting the encoding and silently
+ * reading nothing when the guess drifts.
+ *
+ * The log itself is a concatenation of independently flushed zstd frames, so a
+ * single `zstdDecompressSync` call would decode only the first one. Frames are
+ * split on their magic number and decoded one by one; a frame still being
+ * appended fails and is skipped rather than discarding the whole transcript.
  * @param sessionId - the Session whose log to read.
  * @returns the decoded events in log order.
  */
 function events(sessionId) {
-  const directory = CWD.replace(/[^A-Za-z0-9]/g, '-').replace(/^-/, '--').replace(/-$/, '--');
-  const path = join(HOME, 'sessions', directory, sessionId, 'session.v3.jsonl.zstd');
+  const root = join(HOME, 'sessions');
+  let path;
+  try {
+    for (const entry of readdirSync(root)) {
+      const candidate = join(root, entry, sessionId, 'session.v3.jsonl.zstd');
+      if (existsSync(candidate)) { path = candidate; break; }
+    }
+  } catch {
+    return [];
+  }
+  if (path === undefined) return [];
   let buffer;
   try {
     buffer = readFileSync(path);
