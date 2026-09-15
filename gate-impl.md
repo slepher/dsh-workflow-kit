@@ -33,6 +33,21 @@
 | D9 | `present`/`todo_write` 等非文件写工具 | 不纳入文件写检查；`present` 只读并追加 `deliverables/presented`，落在 §4.1「其他未列工具 → allow」。 |
 | D10 | 符号名更正 | 正文出现的 `Owned` 实为 `task.owned: string[]`；`paths()` 是 `git diff --name-only` 的**变更文件名列表**，不是可写路径集合；`startContinuable` 是 `ctx.subagents` 的方法，不是 workers 的方法。 |
 
+### 0.2 执行环境前置（必须先满足，否则 P1a 之后全部无法落地）
+
+本任务同时修改两个**并列**仓库：`dsh-workflow-kit` 与 `dsh-codex-app-provider`。执行者的可写工作区必须同时覆盖两者，至少覆盖 `/home/slepher/project/agents/dsh/`。
+
+- 已验证的失败：在仅覆盖 `dsh-workflow-kit` 的工作区里创建 `dsh-codex-app-provider/src/tool-gate.ts` 被文件沙箱拒绝（`workspace-write` 越界）。这不是可绕过的限制，而是范围问题——**P1a、P3、P4 全部落在 provider 仓库**，P1b/P1c/P2/P5 落在 workflow 仓库。
+- 真实 Codex 实验还需要能写 `~/.codex`（app-server 状态目录，以及 `config.toml` 的临时 hook 条目）。受管部署路径 `/etc/codex/requirements.toml` 另需 root。
+- 若在受限环境内跑 `codex exec`，注意 `/tmp` 可能在每次调用之间被清空：一次完整实验（写 hook → 取 hash → 写信任 → 跑 turn → 回滚）必须**在单次调用内**完成，或把探针放在持久目录。
+- 受信钩子回滚属于硬要求：改 `config.toml` 前先备份，并用退出陷阱无条件恢复，收尾打印前后 hash 对比。
+
+### 0.3 当前进度（交接状态）
+
+- 已提交：`8dd2f95` 计划文档入库；`b2ea041` 按 P0 实测与 D1–D10 修订本文。两包工作树在该提交时干净。
+- 已完成：P0（见 §9 实测结论）。**P1a 尚未开始**——第一次写入 provider 仓库被沙箱拒绝，未留下任何半成品文件。
+- 未开始：P1a/P1b/P1c、P2、P3、P4、P5。
+
 ## 1. 范围与完成含义
 
 ### 1.1 范围内
@@ -437,6 +452,15 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 - 实测 hook 输入字段：`session_id`、`turn_id`、`transcript_path`、`cwd`、`hook_event_name`、`model`、`permission_mode`、`tool_name`、`tool_input`、`tool_use_id`。Codex 侧工具名实测为 `Bash` 与 `apply_patch`；`apply_patch` 的 `tool_input.command` 携带完整 patch，路径可为**绝对路径**。
 - `hooks/list` 逐条返回 `key`、`eventName`、`command`、`matcher`、`timeoutSec`、`enabled`、`isManaged`、`source`、`sourcePath`、`currentHash`、`trustStatus`、`errors`、`warnings`。用户配置条目的 key 形如 `<绝对 sourcePath>:pre_tool_use:<matcherIndex>:<hookIndex>`；`[hooks.state.<key>].trusted_hash` 等于 `currentHash` 即为 trusted。
 
+**尚未在 P0 覆盖、需要在 P3 补的问题：**
+
+- 本 provider 自己的 client 与 socket 桥的端到端闭环（P0 用的是 shell 探针，不是 `lib/pretool-client.js`）。
+- `hooks/list` preflight 与 `hook/started`/`hook/completed` 证据收集（见 D6/D7）。
+- Codex 侧其他工具与 `write_stdin`、`exec_command`、`shell_command` 等变体的实测名称。P0 只实测了 `Bash` 与 `apply_patch` 两个名字。
+- `features.hooks` 是否必需：P0 用 `-c features.hooks=true` 运行时成功，但未做「不加该 flag」的对照，因此不能断言必需与否。受管模板保留该行。
+- 上游 #23411 声称 code mode 的 `exec` 不触发 PreToolUse。本机未启用 code mode，该路径**未验证**；若部署启用 `features.code_mode`，需单独复验。
+
+
 ### P1：绑定与唯一校验函数
 
 1. provider 新增公开类型/registry/bind 接口和 options.gate 持久化。
@@ -542,6 +566,66 @@ DSH_PRETOOL_RUNTIME=<opaque runtime key>
 - 所有当前任务交付且释放后 complete 成功。
 - 等待运行中 child 的 manager 可正常 idle，无 Stop 循环。
 - complete 检查不自动执行 commit、merge、archive 或 release。
+
+### 10.5 P0 可复现实验：证明同步 PreToolUse deny 真的阻断执行
+
+本实验已于 2026-09-15 在 `codex-cli 0.154.0` 通过；它同时暴露了「未受管 hook 被静默跳过」这一必须处理的事实，因此步骤 2–4 是任何「hook 已接入」声明的最低证据。
+
+前提：`~/.codex` 可写。受管部署把步骤 2–4 换成写入 `/etc/codex/requirements.toml`（需 root），此时 `trustStatus` 直接是 `managed`，可跳过信任记录。整个流程应在**单次 shell 调用**内完成（`/tmp` 可能逐次清空），并在退出时无条件恢复 `config.toml`。
+
+**步骤 1–2：备份并声明一个 deny-all hook**
+
+```sh
+set -u
+CFG="$HOME/.codex/config.toml"; H="$HOME/.codex/gateprobe-deny.sh"; T=$(mktemp -d)
+cp -f "$CFG" "$T/bak"; OLD=$(sha256sum "$CFG" | cut -d' ' -f1)
+trap 'cp -f "$T/bak" "$CFG"; rm -f "$H"' EXIT
+
+cat > "$H" <<'EOS'
+#!/bin/sh
+printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"gateprobe deny all"}}'
+EOS
+chmod +x "$H"
+
+# matcher 必须是 "*"；若配置已有 [features] 不要追加第二个 [features] 表。
+cat >> "$CFG" <<EOF
+
+[[hooks.PreToolUse]]
+matcher = "*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "$H"
+timeout = 10
+EOF
+```
+
+**步骤 3–4：把 hook 变成 trusted**
+
+对 `codex app-server --stdio` 发 `initialize` + `hooks/list`（params `{cwds:[<workspace>]}`），从返回条目取 `currentHash`，然后：
+
+```sh
+cat >> "$CFG" <<EOF
+
+[hooks.state."$CFG:pre_tool_use:0:0"]
+trusted_hash = "<currentHash>"
+EOF
+```
+
+再查一次 `hooks/list`，确认同一条目 `trustStatus == "trusted"`。只做步骤 2 时它会是 `enabled: true` + `trustStatus: "untrusted"`，而**执行时被静默跳过**。
+
+**步骤 5：真实 turn**
+
+在临时 workspace 跑一次 `codex exec`，提示词只要求两件事：(1) `touch marker.txt`；(2) 用 `apply_patch` 创建 `apply.txt`。
+
+通过判据（缺一不可）：
+
+- hook 脚本自身被调用两次，`tool_name` 分别为 `Bash` 与 `apply_patch`；
+- `marker.txt` 与 `apply.txt` **都不存在**；
+- Codex 输出 `Command blocked by PreToolUse hook: <reason>`；
+- 收尾打印的 `config.toml` 前后 hash 相同，且探针脚本已删除。
+
+反例判据（说明实验无效，不能记为通过）：只看到 `hook: PreToolUse` / `hook: PreToolUse Completed` 这类日志。未受管的**第三方** hook 会照常触发并打印该行，而自己的 hook 从未运行——P0 第一次运行就是这样。必须用 hook 脚本自身的日志或 `hook/started` 通知确认**是哪一个** hook 运行了。
 
 ## 11. 检查命令与产物
 
