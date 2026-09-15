@@ -364,7 +364,32 @@ export class WorkflowWorkers {
   }
 
   async get(parentId: string, id: string): Promise<WorkerProjection> {
-    const record = this.record(parentId, id);
+    return this.project(this.record(parentId, id));
+  }
+
+  /**
+   * Count the children of the given parent Sessions that are not confirmed idle.
+   *
+   * Capacity spans every Session that adopted a generation in one repository, so
+   * this is the Host's own read-only statistic: it reads the records directly
+   * instead of asking for each parent in turn, which would demand that the
+   * caller be every one of them. Per-child operations keep their parent-identity
+   * check; this entry grants no access to another Session's children.
+   * @param parentIds - the parent Sessions whose children to count.
+   * @returns how many of their open children are not confirmed idle.
+   */
+  async activeCount(parentIds: readonly string[]): Promise<number> {
+    this.assertIdentity();
+    const parents = new Set(parentIds);
+    const records = Object.values(this.store.read().nativeChildren ?? {})
+      .filter(record => !record.closed && parents.has(record.parentSessionId));
+    const children = await Promise.all(records.map(record => this.project(record)));
+    return children.filter(child => child.state !== "idle").length;
+  }
+
+  /** Project one stored child record from native facts. */
+  private async project(record: NativeChildRecord): Promise<WorkerProjection> {
+    const parentId = record.parentSessionId, id = record.id;
     this.assertIdentity();
     const active = this.ctx.agents.get(SessionId(id));
     if (active !== undefined && String(active.session.header.parentSession) !== parentId) throw new Error("Native child parent identity mismatch");

@@ -229,6 +229,22 @@ export class Workflow {
     if (role===CODING_CONFIG_KEY.def||role===CODING_CONFIG_KEY.sup) throw new Error(`Legacy coding role ${role} must be revised to Role: ${CODING_WORKER} before dispatch; the bound strategy selects the sup/def configuration`)
     return role===CODING_WORKER?this.workers.captureCoding('main'):this.workers.captureRole(role,CONFIG_KEYS)
   }
+  /**
+   * Capture one execution for ordinary delegation.
+   *
+   * A delegated child has no attempt and no generation, so nothing on the Host
+   * side advances a handoff or a bounded consultation it might request. Binding
+   * the Session's adaptive or bootstrap strategy would hand it phase prompts for
+   * control reports that could only come back as ordinary results, so delegation
+   * runs the def coding configuration independently instead. Every other role
+   * captures its own configuration key, exactly as a dispatch does.
+   * @param role - the role the caller assigned.
+   * @returns the capture for the delegated child.
+   */
+  private delegationCapture(role: string): Capture {
+    if (role===CODING_CONFIG_KEY.def||role===CODING_CONFIG_KEY.sup) throw new Error(`Legacy coding role ${role} must be revised to Role: ${CODING_WORKER} before delegation; the delegated execution binds the def coding configuration`)
+    return role===CODING_WORKER?this.workers.codingCapture(this.workers.selectedProfileId(),'economy','main'):this.workers.captureRole(role,CONFIG_KEYS)
+  }
   /** Capture one execution from a bound integration snapshot. */
   private integrationCapture(integration: Integration, role: string, phase: CodingPhase = 'main'): Capture {
     if (!integration.coding||!integration.profile) throw new Error('Integration has no bound strategy snapshot; refresh it before continuing')
@@ -244,9 +260,12 @@ export class Workflow {
   }
   private async capacity(run: Run) {
     const limit=run.plan.concurrency ?? 4
+    // Concurrency spans every Session that adopted a generation in this
+    // repository, so the count is read as one Host statistic; asking per parent
+    // would require the caller to be all of them.
     const parents=new Set(this.runs.filter(r=>r.plan.repository===run.plan.repository).map(r=>r.parent))
-    const active=(await Promise.all([...parents].map(parent=>this.workers.list(parent)))).flat().filter(w=>w.state!=='idle')
-    if (active.length>=limit) throw new Error(`Worker concurrency capacity ${limit} reached`)
+    const active=await this.workers.activeCount([...parents])
+    if (active>=limit) throw new Error(`Worker concurrency capacity ${limit} reached`)
   }
   private scoped(root: string, path: string) {
     const target=resolve(root,path), rel=relative(root,target)
@@ -548,6 +567,28 @@ export class Workflow {
     return result
   }
   /**
+   * Whether an adopted generation already manages one child identity.
+   *
+   * Ordinary delegation and managed execution are different lifecycles: a
+   * managed child's continuation has to move the attempt's acceptance, review
+   * and candidate state with it, so the ordinary entry refuses to operate one.
+   * The judgment sits between the two entry points instead of being restated by
+   * each, and it covers every identity an attempt can own — the execution, a
+   * handover successor, reviewers, an integration resolution and consultations.
+   * @param child - the child identity the caller named.
+   * @returns whether any adopted run owns it.
+   */
+  private managesAttempt(child: string): boolean {
+    const managed = (id: string | undefined): boolean => id === child
+    return this.runs.some(run => run.attempts.some(a =>
+      managed(a.worker) || managed(a.handoff?.toWorker) || managed(a.review?.worker)
+      || managed(a.integration?.review?.worker) || managed(a.integration?.resolution)
+      || (a.previousReviews ?? []).some(review => managed(review.worker))
+      || (a.previousIntegrations ?? []).some(integration => managed(integration.review?.worker))
+      || (a.consults ?? []).some(consult => managed(consult.id))))
+  }
+
+  /**
    * Assign a bounded task to one role without adopting a generation.
    *
    * This is the delegation half of the workflow contract: roles are this
@@ -572,11 +613,12 @@ export class Workflow {
       if (writes.some(root=>!isAbsolute(root))) throw new Error('delegate writes must name absolute paths')
       const boundary: Boundary = { cwd, writableRoots: writes, network: input.network??'disabled', ports: {} }
       const id=randomUUID()
-      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.capture(role),managed:true,boundary})
+      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.delegationCapture(role),managed:true,boundary})
       const started=await this.workers.append(parent,id,text,true)
       return { child: started, ...this.reply(started) }
     }
     const child=await this.workers.get(parent,input.child)
+    if (this.managesAttempt(input.child)) throw new Error(`delegate does not operate ${input.child}: this child belongs to a managed task attempt and its continuation must carry the attempt's acceptance, review and candidate state. Use the workflow actions instead — action "continue" with \`task\` (and \`attempt\` when several exist), action "status" to read the generation, or action "release" to finish with it`)
     if (input.stop===true) {
       if (child.state==='running'&&child.turnId) await this.workers.interrupt(parent,child.id,child.turnId,true)
       const stopped=await this.workers.get(parent,child.id)

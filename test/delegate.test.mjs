@@ -1,10 +1,28 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fixture } from "./native-fixture.mjs";
 import { ROLES, Workflow } from "../lib/index.js";
+
+const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+
+/** One repository with an adopted-generation directory holding a single no-lane task. */
+function project(t) {
+  const root = mkdtempSync(join(tmpdir(), "workflow-delegate-managed-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo);
+  git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1");
+  mkdirSync(join(generation, "tasks"), { recursive: true });
+  writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+  writeFileSync(join(generation, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n");
+  writeFileSync(join(generation, "tasks", "T001.md"), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nInspect.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
+  return { repo, generation };
+}
 
 /**
  * Delegation is the other half of the workflow contract: one bounded task goes
@@ -120,4 +138,68 @@ test("delegate refuses what it cannot execute as asked", async t => {
   const writing = await action({ action: "delegate", role: "coding_worker", text: "Patch the file.", writes: [cwd], network: "loopback" });
   assert.deepEqual(f.calls.at(-1).options.execution.boundary, { cwd, writableRoots: [cwd], network: "loopback" });
   assert.equal(writing.child.id.length > 0, true);
+});
+
+/**
+ * Ordinary delegation and managed execution are different lifecycles: a
+ * managed child's continuation has to carry the attempt's acceptance, review
+ * and candidate state with it, so the ordinary entry must not reach one.
+ */
+test("delegate refuses a child an adopted generation manages", async t => {
+  const { repo, generation } = project(t);
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+
+  await action({ action: "adopt", generation });
+  await action({ action: "dispatch", task: "T001" });
+  const attempt = (await action({ action: "status" })).tasks.find(item => item.task === "T001");
+  assert.equal(attempt.state, "running");
+
+  // Every ordinary operation on the managed execution is refused, including a
+  // bare read: guessing which handle belongs to which lifecycle is the mistake.
+  for (const input of [
+    { action: "delegate", child: attempt.workerId },
+    { action: "delegate", child: attempt.workerId, text: "also change the target" },
+    { action: "delegate", child: attempt.workerId, stop: true },
+  ]) await assert.rejects(action(input), /belongs to a managed task attempt/,
+    JSON.stringify(input) + " must name the managed lifecycle instead of proceeding");
+  assert.deepEqual(f.calls.filter(call => call.delivery === "steer" || call.delivery === "queue"), [],
+    "a refused delegation dispatches nothing");
+
+  // The workflow's own continuation still reaches the same child.
+  await action({ action: "continue", task: "T001", text: "Keep going." });
+  assert.equal(f.calls.at(-1).delivery, "steer", "the managed entry steers the active turn");
+  assert.equal(f.calls.at(-1).id, attempt.workerId);
+});
+
+/**
+ * A delegated child has no attempt, so no Host path advances a handoff or a
+ * consultation it might request. Binding the Session's adaptive or bootstrap
+ * strategy would hand it prompts for control reports nothing here processes.
+ */
+test("ordinary delegation runs coding independently, whatever the Session prefers", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-delegate-strategy-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cwd = join(root, "work"); mkdirSync(cwd);
+  const f = fixture(t, { cwd, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+
+  // The Session prefers the strategy that hands off; delegation must not inherit it.
+  f.store.selectStrategy("parent", "bootstrap");
+  const delegated = await action({ action: "delegate", role: "coding_worker", text: "Patch the file.", writes: [cwd] });
+  const opened = f.promptText(f.calls.at(-1));
+  assert.match(opened, /\[coding-independent\]/, "the bound phase prompt is the independent one");
+  assert.doesNotMatch(opened, /coding-bootstrap-opening|coding-adaptive/,
+    "no phase prompt asks for a control report the ordinary Host cannot settle");
+
+  const worker = await f.run(() => f.workers.get("parent", delegated.child.id));
+  assert.deepEqual(worker.strategy, { requested: "economy", effective: "independent", tier: "def", phase: "main" },
+    "the delegated child records the independent def binding it runs");
+  assert.equal(f.calls.at(-1).options.model, ROLES.find(role => role.name === "coding_worker").model,
+    "the def configuration is the role's own declared model");
+
+  // The refusal path for legacy coding keys still applies to delegation.
+  await assert.rejects(action({ action: "delegate", role: "def_coding_worker", text: "x" }), /must be revised to Role: coding_worker/);
 });

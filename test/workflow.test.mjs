@@ -117,3 +117,37 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   assert.equal((await action({ action: "status" })).tasks.find(item => item.task === "T007").turnId, "wrong-turn");
   assert.deepEqual({ threads: count("create"), turns: count("send") }, mismatchCalls);
 });
+
+/**
+ * Concurrency is a repository-wide budget, so two Sessions may adopt the same
+ * repository and both need the count. Reading it per parent made the caller ask
+ * for another Session's children, which the parent-identity check refuses.
+ */
+test("capacity counts every Session that adopted the same repository", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-capacity-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo); git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1"); mkdirSync(join(generation, "tasks"), { recursive: true });
+  writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+  writeFileSync(join(generation, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n## T002\n- State: executable\n- Revision: 1\n");
+  for (const id of ["T001", "T002"]) writeFileSync(join(generation, "tasks", `${id}.md`), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nInspect ${id}.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const first = new Workflow(f.workers, "/skills/codex-workflow");
+  await f.run(() => first.execute("parent", { action: "adopt", generation }));
+  await f.run(() => first.execute("parent", { action: "dispatch", task: "T001" }));
+  assert.equal((await f.run(() => first.execute("parent", { action: "status" }))).tasks.length, 1, "one Session starts one attempt");
+
+  // A second Session adopted the same repository; a restart loads both runs.
+  const runs = f.store.read().runs;
+  const second = structuredClone(runs[0]);
+  second.id = "second-run"; second.parent = "parent2"; second.attempts = [];
+  runs.push(second); f.store.save();
+  const restarted = new Workflow(f.workers, "/skills/codex-workflow");
+
+  // The first Session's next dispatch must count both Sessions' children, not
+  // ask the other Session for its own.
+  await f.run(() => restarted.execute("parent", { action: "dispatch", task: "T002" }));
+  const summary = await f.run(() => restarted.execute("parent", { action: "status" }));
+  assert.deepEqual(summary.tasks.map(attempt => attempt.task).sort(), ["T001", "T002"],
+    "the same Session keeps dispatching while another owns the repository");
+});
