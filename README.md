@@ -92,7 +92,7 @@ The flow to drive, and what to judge:
 
 1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` is bound to `gpt-5.6-luna` at medium effort and edits no source, so the pass stays cheap. The result must carry `reply: null` with a note saying where the reply will arrive; a bare handle is the defect that field replaced.
 2. Confirm **one** notice settles the child, and that it is the runtime's own — the workflow plugin contributes none, so two notices for one settlement is a defect. It names the child and carries its closing message, or states that the child left none.
-3. Confirm the caller never spends a second call to learn the reply, and that re-reading a settled child with `{ action: "delegate", worker: "<handle>" }` returns `reply` from the durable report — the notice is a wake-up, the report is what survives one that was never delivered.
+3. Confirm the caller neither polls, sleeps, nor spends a second call waiting for the reply: it ends its turn, and the runtime's notice carries the reply into the next one. Re-reading a settled child with `{ action: "delegate", worker: "<handle>" }` still returns `reply` from the durable report — the notice is a wake-up, the report is what survives one that was never delivered.
 4. Send a second turn on the *same* child with the returned handle — `{ action: "delegate", worker: "<handle>", text: "<a follow-up>" }` — and confirm the reply continues that conversation instead of starting another.
 5. Stop the current turn with `{ action: "delegate", worker: "<handle>", stop: true }` and confirm the returned child state changes.
 6. Confirm that none of the above demands `adopt` or a `generation`: delegation is the generation-free path.
