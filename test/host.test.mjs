@@ -17,9 +17,19 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
 
   let executionReads = 0, routes = 0;
+  const handlers = new Map(), binds = [];
   class CodexExecution extends Service {
     constructor(scope) { super(scope, "codexExecution"); }
     async read() { executionReads++; return undefined; }
+  }
+  class CodexToolGate extends Service {
+    constructor(scope) { super(scope, "codexToolGate"); }
+    register(hook, handler) {
+      assert.equal(handlers.has(hook), false, "one handler per hook");
+      handlers.set(hook, handler);
+      return () => handlers.delete(hook);
+    }
+    bind(sessionId, binding) { binds.push({ sessionId, binding }); }
   }
   class Subagents extends Service { constructor(scope) { super(scope, "subagents"); } }
   class Connection extends Service {
@@ -29,7 +39,7 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   }
   class WebServer extends Service { constructor(scope) { super(scope, "webServer"); } register() { routes += 1; return () => { routes -= 1; }; } }
   class Sessions extends Service { values = new Map(); constructor(scope) { super(scope, "sessions"); } get(id) { return this.values.get(String(id)); } }
-  await ctx.plugin(CodexExecution); await ctx.plugin(Subagents); await ctx.plugin(Connection); await ctx.plugin(WebServer); await ctx.plugin(Sessions);
+  await ctx.plugin(CodexExecution); await ctx.plugin(CodexToolGate); await ctx.plugin(Subagents); await ctx.plugin(Connection); await ctx.plugin(WebServer); await ctx.plugin(Sessions);
   let tools;
   await ctx.plugin({ inject: ["tools"], apply(scope) { tools = scope.tools; scope.tools.register(defineTool({
       name: "ordinary_sentinel", description: "ordinary tool sentinel", parameters: {},
@@ -71,6 +81,7 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
 
   await plugin.dispose();
   assert.equal(routes, 0);
+  assert.equal(handlers.size, 0, "unloading the workflow Host releases the provider gate handler");
   assert.ok(ctx.get("codexExecution"), "workflow unload retains the independent provider");
   const afterUnload = await tools.execute({ signal: new AbortController().signal, callId: "ordinary-after", name: "ordinary_sentinel", arguments: {}, agent });
   assert.equal(afterUnload.isError, false); assert.equal(afterUnload.content[0].text, "ordinary-ok");

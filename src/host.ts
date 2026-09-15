@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type {} from "dsh-codex-app-provider";
 import type {} from "@deepseek-ai/dsh-settings";
 import { installProfileRpc } from "./profile-rpc.js";
@@ -9,11 +10,49 @@ import { WorkflowStore } from "./store.js";
 import { Workflow } from "./workflow.js";
 import { ROLES } from "./roles.js";
 import { WorkflowWorkers } from "./workers.js";
+import { installedCodexToolGate, workflowGateHandler, WORKFLOW_GATE_HOOK } from "./gate.js";
 
 export const name = "dsh-workflow-kit";
-export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution"];
+/**
+ * The Codex provider publishes the gate as its own capability. It is required
+ * rather than optional: a package set without it cannot gate a Codex child, and
+ * starting one ungated would silently run the broadest authority there is.
+ */
+export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution", "codexToolGate"];
 
 export interface Config { stateDir: string; workflowSkillDir?: string; implementationStandardDir?: string; defaultProfile?: string }
+
+/**
+ * The DSH-native half of the session gate.
+ *
+ * It runs as a monotonic guard after every extensible `tools/pre-execute`
+ * listener and before the tool body, so a denial means the model-visible
+ * operation never executed. It answers only for a Session this Host registered:
+ * a call with no agent, or one whose agent or Session is no longer the
+ * registered instance, is left to the other checks in the pipeline.
+ * @param ctx - the Host context carrying the live agent and session registries.
+ * @param store - the workflow state holding each managed child's binding.
+ * @param workflow - the adopted runs the manager binding is derived from.
+ * @param execution - the pending tool call.
+ * @returns a denial reason, or `undefined` to leave the call allowed.
+ */
+function nativeGate(ctx: Context, store: WorkflowStore, workflow: Workflow, execution: Readonly<ToolExecution>): string | undefined {
+  const agent = execution.agent;
+  if (agent === undefined) return undefined;
+  if (ctx.agents.get(agent.id) !== agent) return undefined;
+  const session = agent.session;
+  if (ctx.sessions.get(session.id) !== session) return undefined;
+  const sessionId = String(session.id);
+  // A managed child carries its binding; the manager's is derived from the run
+  // it adopted, so a new revision updates it without a second persisted table.
+  // A Session with neither is not gated and keeps its previous behaviour.
+  const binding = store.read().nativeChildren?.[sessionId]?.gate ?? workflow.managerBinding(sessionId);
+  if (binding === undefined) return undefined;
+  const cwd = typeof session.header?.cwd === "string" ? session.header.cwd : "";
+  const decision = workflowGateHandler(binding, { source: "dsh", sessionId, callId: String(execution.callId),
+    cwd, toolName: execution.name, toolArgs: execution.arguments });
+  return decision.kind === "deny" ? decision.reason : undefined;
+}
 
 /** Install workflow policy over native DSH children and read-only Codex execution facts. */
 export function apply(ctx: Context, config?: Config): void {
@@ -44,6 +83,13 @@ export function apply(ctx: Context, config?: Config): void {
   installProfileRpc(ctx, catalog, store, defaultProfile);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
   const workflow = new Workflow(consumer, config.workflowSkillDir);
+  // The gate is installed before any session can be started: the one business
+  // handler is registered with the provider first, then the DSH-native guard.
+  // Both entry points call the same function, and neither calls a model.
+  const providerGate = installedCodexToolGate(ctx);
+  if (providerGate === undefined) throw new Error("the installed Codex provider does not publish codexToolGate; a workflow child cannot be gated without it");
+  ctx.effect(() => providerGate.register(WORKFLOW_GATE_HOOK, workflowGateHandler), "dsh-workflow-kit: Codex PreToolUse gate handler");
+  ctx.effect(() => ctx.tools.guard(execution => nativeGate(ctx, store, workflow, execution)), "dsh-workflow-kit: native session gate guard");
   ctx.tools.register(defineTool({
     name: "codex_workflow",
     // The role catalogue is this tool's content, so the contract names it: a

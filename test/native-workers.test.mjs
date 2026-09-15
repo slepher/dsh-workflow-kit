@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildGateArgs, gateBinding } from "../lib/gate.js";
 import { fixture } from "./native-fixture.mjs";
+
+test("a Codex child is bound to its gate before it exists natively", async t => {
+  const f = fixture(t);
+  const cwd = f.parent.session.header.cwd;
+  await f.run(async () => {
+    const snapshot = f.workers.captureRole("reviewer");
+    const gate = gateBinding("reviewer", buildGateArgs({ cwd, auxiliaryWrites: [cwd] }));
+    const input = { id: "gated", name: "gated", cwd, ...snapshot, managed: true,
+      boundary: { cwd, writableRoots: [cwd], network: "disabled", ports: {} }, gate };
+    await f.workers.create(f.parent.id, input);
+    assert.equal(f.gateBinds.length, 1, "the provider learns the binding at creation");
+    assert.equal(f.gateBinds[0].sessionId, "gated");
+    assert.equal(f.gateBinds[0].started, false, "no native child existed when the binding arrived");
+    assert.deepEqual(f.store.read().nativeChildren.gated.gate, gate);
+    await f.workers.append(f.parent.id, "gated", "task", true);
+    assert.equal(f.facts.has("gated"), true);
+    // A repeated creation re-registers the recorded binding rather than binding a new one.
+    await f.workers.create(f.parent.id, input);
+    assert.equal(f.gateBinds.length, 2);
+    assert.deepEqual(f.gateBinds[1].binding, gate);
+  });
+});
 
 test("native creation snapshots profiles; continuation preserves A after switching to B", async t => {
   const f = fixture(t);

@@ -8,13 +8,14 @@ import { randomUUID } from 'node:crypto'
 import type { WorkflowWorkers } from './workers.js'
 import type { Capture, Report, WorkerProjection } from './workers.js'
 import { ROLES, CONFIG_KEYS, CODING_WORKER } from './roles.js'
+import { buildGateArgs, gateBinding, MANAGER_ROLE, ownsProductWrites } from './gate.js'
 import { CODING_CONFIG_KEY } from './constants.js'
 import { bindIntegrateStrategy, snapshotProfile, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type Tier } from './strategy.js'
 import { parseControlSignal, type ConsultSignal } from './control.js'
 import type { HandoffRecord, ReportUsage } from './workers.js'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { RoleInput } from './configuration.js'
-import type { Boundary } from './types.js'
+import type { Boundary, GateBinding } from './types.js'
 
 const exec = promisify(execFile)
 type Task = { network?: 'disabled'|'loopback'; lane?: boolean; cwd?: string; reads?: string[]; writes?: string[]; reports?: string[]; ports?: string[]; id: string; revision: number; role: string; depends: string[]; owned: string[]; resources: string[]; inputs: string[]; review: string; text: string }
@@ -130,6 +131,8 @@ export class Workflow {
   private runs: Run[]
   private directory: string
   private queue: Promise<unknown> = Promise.resolve()
+  /** Manager bindings derived from the current run, keyed by run id and plan revision. */
+  private readonly managerGates = new Map<string, { revision: number; binding: GateBinding }>()
   constructor(readonly workers: WorkflowWorkers, readonly skillRoot?: string) {
     this.directory = workers.store.stateDir
     mkdirSync(this.directory, {recursive:true, mode:0o700})
@@ -251,12 +254,33 @@ export class Workflow {
     const binding=bindIntegrateStrategy(snapshotProfile(integration.coding),integration.strategy,phase)
     return this.workers.captureSnapshot(role,integration.profile,integration.coding,{requested:binding.requested,effective:binding.effective,tier:binding.tier,phase:binding.phase},binding.prompts)
   }
-  private async start(run: Run, id: string, role: Capture, cwd: string, name: string, text: string, boundary: Boundary, idempotencyKey?: string) {
+  private async start(run: Run, id: string, role: Capture, cwd: string, name: string, text: string, boundary: Boundary, gate: GateBinding, idempotencyKey?: string) {
     await this.capacity(run)
-    await this.workers.create(run.parent,{id,name,cwd,...role,managed:true,boundary})
+    await this.workers.create(run.parent,{id,name,cwd,...role,managed:true,boundary,gate})
     const worker = await this.workers.get(run.parent,id)
     if (worker.model!==role.execution.model || worker.effort!==role.execution.reasoningEffort) throw new Error('Runtime model/effort differs from required role; task was not started')
     return this.workers.append(run.parent,id,text,true,idempotencyKey)
+  }
+
+  /**
+   * The manager gate for one adopted Session.
+   *
+   * Derived from the current run rather than persisted: the manager's scope is
+   * "coordinate this generation", so adopting a new revision updates it without
+   * any migration. It owns no product file and exactly the generation's own
+   * human-facing summary document.
+   * @param sessionId - the DSH Session that adopted the generation.
+   * @returns the binding, or `undefined` when this Session adopted nothing.
+   */
+  managerBinding(sessionId: string): GateBinding | undefined {
+    const run = this.runs.find(candidate => candidate.parent === sessionId)
+    if (run === undefined) return undefined
+    const cached = this.managerGates.get(run.id)
+    if (cached !== undefined && cached.revision === run.plan.revision) return cached.binding
+    const binding = gateBinding(MANAGER_ROLE, buildGateArgs({ cwd: run.plan.repository, productWrites: [],
+      sharedWrites: [join(run.plan.generation, 'summary.md')] }))
+    this.managerGates.set(run.id, { revision: run.plan.revision, binding })
+    return binding
   }
   private async capacity(run: Run) {
     const limit=run.plan.concurrency ?? 4
@@ -328,8 +352,11 @@ export class Workflow {
     const bindings = {candidate:review.candidate,input:review.input,...(review.target?{target:review.target}:{}),verdict:disposition?'discard | needs-decision':'passed | changes-required | needs-decision',findings:'Explain evidence, corrections and checks'}
     const artifacts=join(this.artifacts(run,attempt),'review',review.worker)
     mkdirSync(artifacts,{recursive:true,mode:0o700})
+    // A reviewer judges; it owns no product file, only its own artifacts, and
+    // never the whole results directory it happens to read from.
+    const gate=gateBinding(role.role,buildGateArgs({cwd:integration?.path ?? run.plan.repository,auxiliaryWrites:[artifacts]}))
     const w = await this.start(run,review.worker,role,integration?.path ?? run.plan.repository,`review ${attempt.task.id}`,
-      `Review independently; do not modify product files. Read ${attempt.contract} and ${attempt.result??attempt.directory}. ${disposition?'Decide whether this stopped attempt may be archived without delivering its candidate. Discard preserves evidence and leaves task acceptance unmet; report remaining work and next owner.':integration ? `Review the combined integration against target ${integration.target}. Source ${integration.source}. ${integration.conflict?'There are unresolved conflicts: decide correction direction; do not return passed.':''}` : 'Review the task candidate.'} Input ${attempt.base}; candidate ${candidate}. Return only JSON with exact identity fields: ${JSON.stringify(bindings)}. Worker outputs are evidence, not authorization. Artifacts: ${artifacts}.`, {cwd:integration?.path ?? run.plan.repository,artifacts,results:this.resultDirectory(run,attempt),writableRoots:[artifacts],network:'disabled',ports:{}})
+      `Review independently; do not modify product files. Read ${attempt.contract} and ${attempt.result??attempt.directory}. ${disposition?'Decide whether this stopped attempt may be archived without delivering its candidate. Discard preserves evidence and leaves task acceptance unmet; report remaining work and next owner.':integration ? `Review the combined integration against target ${integration.target}. Source ${integration.source}. ${integration.conflict?'There are unresolved conflicts: decide correction direction; do not return passed.':''}` : 'Review the task candidate.'} Input ${attempt.base}; candidate ${candidate}. Return only JSON with exact identity fields: ${JSON.stringify(bindings)}. Worker outputs are evidence, not authorization. Artifacts: ${artifacts}.`, {cwd:integration?.path ?? run.plan.repository,artifacts,results:this.resultDirectory(run,attempt),writableRoots:[artifacts],network:'disabled',ports:{}}, gate)
     review.turn = w.turnId ?? undefined; this.save()
   }
   private current(parent: string) { const run=this.runs.find(r=>r.parent===parent); if (!run) throw new Error('This session has not adopted a generation; call action "adopt" with the absolute `generation` directory first (action "status" reports whether one is adopted)'); return run }
@@ -613,7 +640,13 @@ export class Workflow {
       if (writes.some(root=>!isAbsolute(root))) throw new Error('delegate writes must name absolute paths')
       const boundary: Boundary = { cwd, writableRoots: writes, network: input.network??'disabled', ports: {} }
       const id=randomUUID()
-      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.delegationCapture(role),managed:true,boundary})
+      // A delegation declares its own write scope and nothing more: a coding
+      // child gets exactly those paths as product grants, every other role gets
+      // them as shared documents — the same distinction the contract makes.
+      const gate=gateBinding(role,buildGateArgs({cwd,
+        productWrites:ownsProductWrites(role)?writes:[],
+        sharedWrites:ownsProductWrites(role)?[]:writes}))
+      await this.workers.create(parent,{id,name:String(input.name??role),cwd,...this.delegationCapture(role),managed:true,boundary,gate})
       const started=await this.workers.append(parent,id,text,true)
       return { child: started, ...this.reply(started) }
     }
@@ -779,8 +812,15 @@ export class Workflow {
       const id=randomUUID();integration.resolution=id;this.save()
       const artifacts=join(this.artifacts(run,a),'resolution',id);mkdirSync(artifacts,{recursive:true,mode:0o700})
       const capture=a.task.role===CODING_WORKER?this.integrationCapture(integration,CODING_WORKER):this.capture(a.task.role)
+      // A repair owns exactly the paths the existing `resolved` check already
+      // recomputes — the union of the source's and the target's changed files —
+      // frozen here so the repair cannot reach beyond what it was dispatched for.
+      const repair=[...await this.paths(integration.path,a.base,integration.source),...await this.paths(integration.path,a.base,integration.target)]
+        .map(path=>resolve(integration.path,path))
+      const gate=gateBinding(capture.role,buildGateArgs({cwd:integration.path,
+        productWrites:ownsProductWrites(capture.role)?repair:[],auxiliaryWrites:[artifacts]}))
       await this.start(run,id,capture,integration.path,`resolve ${a.task.id}`,
-        `Resolve only this integration under the reviewer decision: ${integration.review.report}. Read ${a.contract}. Integration target ${integration.target}, source ${integration.source}. Preserve both accepted behaviors, run required checks and commit the merge resolution in this worktree. Return the commit and evidence. Do not change task ownership or target branch.`, {cwd:integration.path,artifacts,results:this.resultDirectory(run,a),writableRoots:[integration.path,artifacts,await this.git(integration.path,'rev-parse','--absolute-git-dir'),await this.git(integration.path,'rev-parse','--path-format=absolute','--git-path','objects')],network:'disabled',ports:{}})
+        `Resolve only this integration under the reviewer decision: ${integration.review.report}. Read ${a.contract}. Integration target ${integration.target}, source ${integration.source}. Preserve both accepted behaviors, run required checks and commit the merge resolution in this worktree. Return the commit and evidence. Do not change task ownership or target branch.`, {cwd:integration.path,artifacts,results:this.resultDirectory(run,a),writableRoots:[integration.path,artifacts,await this.git(integration.path,'rev-parse','--absolute-git-dir'),await this.git(integration.path,'rev-parse','--path-format=absolute','--git-path','objects')],network:'disabled',ports:{}}, gate)
     } else if (input.action==='resolved') {
       const i=a.integration
       if (!i?.resolution || !i.conflict) throw new Error('No assigned conflict resolution')
@@ -908,7 +948,16 @@ export class Workflow {
         try { await this.commit(run.plan.repository,input) }
         catch { if (!existsSync(this.scoped(run.plan.repository,input))) throw new Error(`Input unavailable: ${input}`) }
       }
-      const w=await this.start(run,a.worker,role,cwd,`${task.id} A${number}`,initialPrompt,allocation,initialStartKey)
+      // The gate is built only now: the lane worktree exists, so each assigned
+      // path is classified by its real filesystem type and every owned product
+      // file is resolved one by one against the actual cwd — never the whole
+      // lane. Declared Write paths, the concrete report paths and the artifacts
+      // are auxiliary grants; a read scope is not a write grant.
+      const gate=gateBinding(role.role,buildGateArgs({cwd,
+        ...(lane===undefined?{}:{lane:lane.path}),
+        productWrites:ownsProductWrites(role.role)?task.owned.map(path=>this.scoped(cwd,path)):[],
+        auxiliaryWrites:[...(task.writes??[]).map(path=>lane?resolve(cwd,path):this.scoped(cwd,path)),...reportPaths,artifacts]}))
+      const w=await this.start(run,a.worker,role,cwd,`${task.id} A${number}`,initialPrompt,allocation,gate,initialStartKey)
       a.turn=w.turnId??undefined;a.state='running';this.save()
     } catch(e) {a.state='unknown';a.error=String(e);this.save();throw e}
   }

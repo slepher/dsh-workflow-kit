@@ -11,6 +11,7 @@ import type { WorkflowStore } from "./store.js";
 import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
 import type { Boundary, ChildAgentOptions, GateBinding, ThreadHandoffService } from "./types.js";
 import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
+import { buildGateArgs, gateBinding, installedCodexToolGate } from "./gate.js";
 import { bindCodingStrategy, snapshotProfile, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
 import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
 
@@ -348,20 +349,45 @@ export class WorkflowWorkers {
     return profile.roles;
   }
 
-  async create(parentId: string, input: Capture & { id?: string; name: string; cwd: string; managed?: boolean; boundary: Boundary }): Promise<WorkerProjection> {
+  async create(parentId: string, input: Capture & { id?: string; name: string; cwd: string; managed?: boolean; boundary: Boundary; gate?: GateBinding }): Promise<WorkerProjection> {
     this.parent(parentId); this.managed(input.managed);
     if (!input.id || input.boundary.cwd !== input.cwd) throw new Error("Managed child requires a stable identity and matching workspace");
     const previous = this.store.read().nativeChildren?.[input.id];
     if (previous !== undefined) {
       if (previous.parentSessionId !== parentId) throw new Error("Managed child parent identity mismatch");
+      // A repeated creation re-registers the recorded binding with the provider:
+      // a provider restart or a reopened Host must find the child gated again.
+      this.registerGate(previous.id, previous.execution.provider, previous.gate);
       // A repeated creation uses the original snapshot, even after a profile switch.
       return this.get(parentId, input.id);
     }
     this.store.putNativeChild({ id: input.id, parentSessionId: parentId, name: input.name, role: input.role, profile: input.profile,
       execution: structuredClone(input.execution), boundary: structuredClone(input.boundary), dispatches: [], acceptance: {},
+      ...(input.gate === undefined ? {} : { gate: structuredClone(input.gate) }),
       ...(input.strategy === undefined ? {} : { strategy: structuredClone(input.strategy) }),
       ...(input.coding === undefined ? {} : { coding: structuredClone(input.coding) }) });
+    this.registerGate(input.id, input.execution.provider, input.gate);
     return this.get(parentId, input.id);
+  }
+
+  /**
+   * Register one managed child's binding with the Codex provider before its
+   * first start.
+   *
+   * The DSH-native guard reads the workflow store directly, so only a Codex
+   * child needs this: its PreToolUse hook reaches the provider, which resolves
+   * the Session identity and asks the same handler. Starting a Codex child the
+   * provider cannot gate is refused rather than run unchecked.
+   * @param id - the child Session identity.
+   * @param provider - the provider the child execution binds.
+   * @param gate - the binding recorded for the child.
+   */
+  private registerGate(id: string, provider: string, gate: GateBinding | undefined): void {
+    if (provider !== NATIVE_EXECUTION_PROVIDER) return;
+    const service = installedCodexToolGate(this.ctx);
+    if (service === undefined) throw new Error("the installed Codex provider does not publish codexToolGate; refusing to start an ungated Codex child");
+    if (gate === undefined) return;
+    service.bind(id, structuredClone(gate));
   }
 
   async list(parentId: string): Promise<readonly WorkerProjection[]> {
@@ -571,6 +597,7 @@ export class WorkflowWorkers {
       await this.create(parentId, { role: successor.role, profile: successor.profile, execution: successor.execution,
         ...(successor.strategy === undefined ? {} : { strategy: successor.strategy }),
         ...(successor.coding === undefined ? {} : { coding: successor.coding }),
+        ...(successor.gate === undefined ? {} : { gate: structuredClone(successor.gate) }),
         id: handoff.toWorker, name: successor.name, cwd: successor.boundary.cwd, managed: true, boundary: successor.boundary });
       const started = await this.append(parentId, handoff.toWorker, handoff.prompt, true, `${handoff.requestId}:continue`);
       handoff = this.putHandoff(parentId, fromWorker, { ...handoff, status: "started",
@@ -634,6 +661,9 @@ export class WorkflowWorkers {
     const capture = this.captureSnapshot(current.role, current.profile, current.coding!, boundStrategy(binding), binding.prompts);
     return { id: "", parentSessionId: current.parentSessionId, name: `${current.name} continue`, role: current.role, profile: current.profile,
       execution: capture.execution, boundary: current.boundary,
+      // The continuation keeps the same task scope: a tier handoff is not a
+      // contract change, so the successor carries the source's gate verbatim.
+      ...(current.gate === undefined ? {} : { gate: structuredClone(current.gate) }),
       ...(capture.strategy === undefined ? {} : { strategy: capture.strategy }),
       ...(capture.coding === undefined ? {} : { coding: capture.coding }),
       dispatches: [], acceptance: {} };
@@ -711,7 +741,10 @@ export class WorkflowWorkers {
       { requested: "adaptive", effective: "independent", tier: "sup", phase: "consultation" }, ["coding-consultation"]);
     const boundary: Boundary = { cwd: request.cwd, artifacts: request.artifacts, results: request.results,
       writableRoots: [request.artifacts], network: request.network, ports: {} };
-    await this.create(parentId, { ...capture, id, name: `consult ${request.workerId}`, cwd: request.cwd, managed: true, boundary });
+    // An expert owns no product file: it may write only the artifacts this
+    // consultation assigned, even though its role label says `coding_worker`.
+    const gate = gateBinding(CODING_WORKER, buildGateArgs({ cwd: request.cwd, auxiliaryWrites: [request.artifacts] }));
+    await this.create(parentId, { ...capture, id, name: `consult ${request.workerId}`, cwd: request.cwd, managed: true, boundary, gate });
     return await this.append(parentId, id, request.prompt, true, request.startKey);
   }
 

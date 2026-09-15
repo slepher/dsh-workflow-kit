@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  buildGateArgs, gateBinding, patchTargets, pathGrant, readGateArgs, resolvedTarget, within, workflowGateHandler,
-  writeTargets, GATE_DENY_PREFIX, WORKFLOW_GATE_HOOK,
+  buildGateArgs, gateBinding, ownsProductWrites, patchTargets, pathGrant, readGateArgs, resolvedTarget, within,
+  workflowGateHandler, writeTargets, GATE_DENY_PREFIX, WORKFLOW_GATE_HOOK,
 } from "../lib/gate.js";
 import { WorkflowStore } from "../lib/store.js";
 
@@ -200,9 +200,12 @@ test("the binding's role never interprets the provider's vocabulary", t => {
     assert.equal(allowed(binding, "bash", { command: "npm test" }, f.root), true, role);
     assert.equal(allowed(binding, "write", { file_path: join(f.artifacts, "x.md") }, f.root), true, role);
   }
-  // A non-coding role cannot be handed product grants at all.
-  assert.throws(() => gateBinding("reviewer", buildGateArgs({ cwd: f.lane, lane: f.lane, productWrites: [join(f.lane, "src", "a.ts")] })),
-    /may not own product writes/);
+  // A non-coding role is built without product grants; the path rules then
+  // refuse a product file while keeping its own artifacts writable.
+  const reviewer = gateBinding("reviewer", buildGateArgs({ cwd: f.lane, lane: f.lane, productWrites: [], auxiliaryWrites: [f.artifacts] }));
+  assert.match(denial(reviewer, "write", { file_path: join(f.lane, "src", "a.ts") }, f.lane), /outside assigned paths/);
+  assert.equal(ownsProductWrites("reviewer"), false);
+  assert.equal(ownsProductWrites("coding_worker"), true);
   assert.throws(() => gateBinding("coding_worker", buildGateArgs({ cwd: f.lane, lane: "relative", productWrites: [] })), /absolute lane/);
   assert.throws(() => gateBinding("coding_worker", buildGateArgs({ cwd: f.lane, lane: f.lane, productWrites: [join(f.other, "src", "d.ts")] })),
     /outside the assignment lane/);

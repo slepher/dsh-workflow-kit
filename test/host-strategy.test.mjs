@@ -21,6 +21,11 @@ class Settings extends Service {
 
 /** Minimal carriers the Host plugin registers against. */
 class CodexExecution extends Service { constructor(scope) { super(scope, "codexExecution"); } async read() { return undefined; } }
+class CodexToolGate extends Service {
+  constructor(scope) { super(scope, "codexToolGate"); }
+  register() { return () => {}; }
+  bind() {}
+}
 class Subagents extends Service { constructor(scope) { super(scope, "subagents"); } }
 class Sessions extends Service {
   values = new Map();
@@ -43,7 +48,7 @@ async function host(t, stored) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = new Context(); t.after(() => ctx.fiber.dispose());
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
-  await ctx.plugin(CodexExecution); await ctx.plugin(Subagents); await ctx.plugin(Sessions);
+  await ctx.plugin(CodexExecution); await ctx.plugin(CodexToolGate); await ctx.plugin(Subagents); await ctx.plugin(Sessions);
   await ctx.plugin(Connection); await ctx.plugin(WebServer);
   await ctx.plugin({ apply: scope => { new Settings(scope, stored); }, inject: [] });
   await ctx.plugin({ apply, inject }, { stateDir: join(root, "state"), workflowSkillDir: "/skills/codex-workflow", defaultProfile: "gpt-workflow" });

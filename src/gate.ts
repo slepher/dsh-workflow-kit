@@ -83,9 +83,6 @@ const SHELL_TOOLS = new Set(["bash", "pwsh", "Bash", "exec_command", "shell", "s
 /** `str_replace_editor` commands that write; `view` is a read. */
 const EDITOR_WRITE_COMMANDS = new Set(["create", "str_replace", "insert"]);
 
-/** Roles whose binding may carry product write grants; every other role owns none. */
-const PRODUCT_WRITE_ROLES = new Set([CODING_WORKER]);
-
 /** A denial carrying this module's fixed, machine-recognizable prefix. */
 function deny(reason: string): GateDecision {
   return { kind: "deny", reason: `${GATE_DENY_PREFIX}${reason}` };
@@ -185,19 +182,29 @@ export function buildGateArgs(input: GateArgsInput): WorkflowGateArgs {
 /**
  * Bind one role to one assignment's arguments.
  *
- * A role that never owns product files must not carry product grants: the
- * binding has to say only what its role can actually be authorized for, so a
- * caller cannot widen a reviewer into a product writer by passing extra paths.
+ * Which assignment kinds may carry product grants is decided where the binding
+ * is built, from the frozen contract: only a coding assignment and an
+ * integration repair own product files, so a reviewer, planner or consultation
+ * binding is built with no product grant at all.
  * @param role - this Host's business label for the child.
  * @param args - the built arguments.
  * @returns the binding the provider stores and the guard reads back.
  */
 export function gateBinding(role: string, args: WorkflowGateArgs): GateBinding {
   if (typeof role !== "string" || role.length === 0) throw new Error("A gate role label is required");
-  if (!PRODUCT_WRITE_ROLES.has(role) && args.productWrites.length > 0) {
-    throw new Error(`Role ${role} may not own product writes`);
-  }
   return { role, hook: WORKFLOW_GATE_HOOK, args: args as unknown as Record<string, unknown> };
+}
+
+/**
+ * Whether one role may be granted product write paths.
+ *
+ * The unified coding worker and an integration repair (which runs under the
+ * contract's own role) are the only assignments that own product files.
+ * @param role - the Host business label.
+ * @returns whether a product grant is meaningful for that role.
+ */
+export function ownsProductWrites(role: string): boolean {
+  return role === CODING_WORKER;
 }
 
 /**
