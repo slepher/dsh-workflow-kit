@@ -35,6 +35,10 @@ const STRATEGY_LABEL: Record<CodingStrategy, WorkflowLocaleKey> = {
 /** Render the composer configuration and strategy chips. @param props - composed slot props. @returns the chip group. */
 export function ConfigPicker({ sessionId, useSession, request, t }: Props): ReactNode {
   const unavailable = useSession(snapshot => snapshot.removed || snapshot.openState === "error");
+  // A subagent's composer chooses neither: the delegation that started the child
+  // already fixed its profile and strategy, and the plan that owns them belongs
+  // to the parent session. The chips stay on the parent's composer.
+  const subagent = useSession(snapshot => snapshot.subagent !== null);
   const [view, setView] = useState<ProfileView | null>(null);
   const [open, setOpen] = useState(false);
   const [strategyOpen, setStrategyOpen] = useState(false);
@@ -58,8 +62,9 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
   useEffect(() => {
     setView(null);
     setPending(false);
+    if (subagent) return;
     send("profiles");
-  }, [sessionId, unavailable]);
+  }, [sessionId, unavailable, subagent]);
 
   const selected = view?.selectedProfile ?? "";
   const known = view?.configs.some(config => config.id === selected) === true;
@@ -81,6 +86,9 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
   if (strategy !== undefined && strategy.preference !== null) {
     strategyItems.push({ id: "default", label: `${t("pickerStrategyFollow")} (${t(STRATEGY_LABEL[strategy.default])})` });
   }
+
+  // Every hook above runs first: a subagent contributes no chips and no request.
+  if (subagent) return null;
 
   return <span className="wf-chip-group">
     <Menu

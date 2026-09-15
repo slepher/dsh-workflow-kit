@@ -64,7 +64,10 @@ test("delegate refuses what it cannot execute as asked", async t => {
   const action = input => f.run(() => workflow.execute("parent", input));
 
   await assert.rejects(action({ action: "delegate", text: "no role" }), /requires the role/);
-  await assert.rejects(action({ action: "delegate", role: "evidence_runner" }), /requires the task text/);
+  // The message names the field to pass; `task` belongs to adopted generations.
+  await assert.rejects(action({ action: "delegate", role: "evidence_runner" }), /requires `text`.*not used here/s);
+  await assert.rejects(action({ action: "delegate", role: "evidence_runner", task: "t1" }), /requires `text`/,
+    "a task id is not the prompt: the caller is told which field starts the child");
   await assert.rejects(action({ action: "delegate", role: "no_such_role", text: "x" }), /lacks required roles: no_such_role|Unknown DSH role/);
   await assert.rejects(action({ action: "delegate", role: "evidence_runner", text: "x", cwd: "relative/dir" }), /absolute directory/);
   await assert.rejects(action({ action: "delegate", role: "coding_worker", text: "x", writes: ["src"] }), /absolute paths/);

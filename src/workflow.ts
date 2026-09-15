@@ -313,7 +313,7 @@ export class Workflow {
       `Review independently; do not modify product files. Read ${attempt.contract} and ${attempt.result??attempt.directory}. ${disposition?'Decide whether this stopped attempt may be archived without delivering its candidate. Discard preserves evidence and leaves task acceptance unmet; report remaining work and next owner.':integration ? `Review the combined integration against target ${integration.target}. Source ${integration.source}. ${integration.conflict?'There are unresolved conflicts: decide correction direction; do not return passed.':''}` : 'Review the task candidate.'} Input ${attempt.base}; candidate ${candidate}. Return only JSON with exact identity fields: ${JSON.stringify(bindings)}. Worker outputs are evidence, not authorization. Artifacts: ${artifacts}.`, {cwd:integration?.path ?? run.plan.repository,artifacts,results:this.resultDirectory(run,attempt),writableRoots:[artifacts],network:'disabled',ports:{}})
     review.turn = w.turnId ?? undefined; this.save()
   }
-  private current(parent: string) { const run=this.runs.find(r=>r.parent===parent); if (!run) throw new Error('Explicitly adopt a generation first'); return run }
+  private current(parent: string) { const run=this.runs.find(r=>r.parent===parent); if (!run) throw new Error('This session has not adopted a generation; call action "adopt" with the absolute `generation` directory first (action "status" reports whether one is adopted)'); return run }
   /**
    * The execution currently responsible for an attempt.
    *
@@ -565,7 +565,7 @@ export class Workflow {
       const role=String(input.role??'')
       if (!role) throw new Error('delegate requires the role to assign the task to; read the roles action for the catalogue')
       const text=String(input.text??'')
-      if (!text.trim()) throw new Error('delegate requires the task text the child is started with')
+      if (!text.trim()) throw new Error('delegate requires `text`: the prompt the new child starts with. `task` names a task id inside an adopted generation and is not used here; for a role-bound child with no generation, pass action "delegate" with `role` and `text`')
       const cwd=input.cwd??this.workers.parentCwd(parent)
       if (!isAbsolute(cwd)) throw new Error('delegate cwd must be an absolute directory')
       const writes=[...(input.writes??[])]
@@ -591,7 +591,7 @@ export class Workflow {
   private async action(parent: string, input: WorkflowAction) {
     if (!parent || !input || typeof input.action!=='string') throw new Error('Parent and action required')
     if (input.action==='adopt') {
-      if (!input.generation || !isAbsolute(input.generation)) throw new Error('generation must be an absolute directory')
+      if (!input.generation || !isAbsolute(input.generation)) throw new Error('adopt requires `generation`: the ABSOLUTE path of an existing <repository>/agentwork/<goal>/generation-N directory (a relative path is refused). Author and validate that directory with the workflow skill, then pass its path; action "status" reports whether this session already adopted one')
       const plan: Plan = await this.python('export-dsh',input.generation)
       plan.repository=realpathSync(plan.repository)
       const goal=dirname(plan.generation)

@@ -1,8 +1,11 @@
 # dsh-workflow-kit
 
-Current runtime boundaries are documented here. The proposed workflow upgrade is
-in [upgrade.md](upgrade.md); its prepared skill text and pending program wiring
-are mapped in [upgrade prompts](docs/upgrade-prompts.md). The older architecture,
+> 当前用户需求：[plugin-requirements.md](../plugin-requirements.md)。
+> 下文旧阶段的协调 DSH 包、角色指令透传与强制只读声明按统一基线修订。
+
+This README retains project and implementation notes. [upgrade.md](upgrade.md)
+and [upgrade prompts](docs/upgrade-prompts.md) record the strategy design and prompt
+wiring; the unified requirements above govern current work. The older architecture,
 HANDOFF and NEXT-STEPS documents are historical and do not define current UI scope.
 
 Workflow owns role/profile files, native Session profile selections, task contracts, lanes, acceptance, integration and release. Codex execution runs through DSH native children and the single `dsh-codex-app-provider` Host plugin. The same package provides a `./client` half: a configuration picker in the composer and the Workflow page in DSH settings.
@@ -67,6 +70,26 @@ node --test --test-isolation=none test/install-configuration.test.mjs test/prepa
 ```
 
 `prepare:local` checks local tarballs before running locked `npm ci`; it does not build or modify another checkout. The compiled Host, its shipped `profiles/` content, the same-package client and `scripts/workflowctl.py` ship together. Native DSH Conversation supplies the child transcript and execution controls; the workflow client supplies the composer configuration picker and the Workflow settings page.
+
+## Agent verification of the model-facing surface
+
+The test suite covers the behaviour behind the tool: planning, delegation boundaries, strategies, storage, and the Host's routing. It cannot cover the tool's *model-facing* surface — the action set, the parameter semantics, and the error wording an agent actually reads. Those only fail inside a real conversation, so they are verified by holding one.
+
+**Required whenever the tool's description, its parameters, its error text, or its action set changes.**
+
+The transport is scripted and the judgement is not:
+
+1. **A script drives the real conversation.** It prompts a live DSH session through a prepared profile and captures the session's output — the same input a person would type and the same output they would read. Driving it by script is what makes the pass repeatable, and it must go through DSH rather than call the plugin's Host methods directly: only the conversation crosses the model-facing surface.
+2. **The reply is parsed, not asserted.** A reply is not deterministic, so no fixed expectation is encoded. An agent reads the captured transcript and decides whether the subagent actually started, whether it executed, and whether it is healthy.
+
+The flow to drive, and what to judge:
+
+1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` is bound to `gpt-5.6-luna` at medium effort and edits no source, so the pass stays cheap.
+2. Send a second turn on the *same* child with the returned handle — `{ action: "delegate", worker: "<handle>", text: "<a follow-up>" }` — and confirm the reply continues that conversation instead of starting another.
+3. Stop the current turn with `{ action: "delegate", worker: "<handle>", stop: true }` and confirm the returned child state changes.
+4. Confirm that none of the above demands `adopt` or a `generation`: delegation is the generation-free path.
+
+Judge the **reply**, not whether the call returned. A defect such as reading `task` where `text` is required, or an error that does not name the field to pass, is visible only in the transcript. Both were found this way; the ones that became assertable are covered by `test/delegate.test.mjs`.
 
 ## Remaining validation and development work
 
