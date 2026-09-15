@@ -79,8 +79,14 @@ The test suite covers the behaviour behind the tool: planning, delegation bounda
 
 The transport is scripted and the judgement is not:
 
-1. **A script drives the real conversation.** It prompts a live DSH session through a prepared profile and captures the session's output — the same input a person would type and the same output they would read. Driving it by script is what makes the pass repeatable, and it must go through DSH rather than call the plugin's Host methods directly: only the conversation crosses the model-facing surface.
-2. **The reply is parsed, not asserted.** A reply is not deterministic, so no fixed expectation is encoded. An agent reads the captured transcript and decides whether the subagent actually started, whether it executed, and whether it is healthy.
+1. **A script drives the real conversation.** `scripts/dialog-check.mjs` authenticates against the running `dsh web` origin, creates a fresh Session, sends one ordinary user prompt, waits for the turn to settle, and prints the driving Session's transcript plus any Session the run created. It asserts nothing.
+
+   ```bash
+   DSH_TOKEN=<token from the `dsh web:` line> node scripts/dialog-check.mjs "<prompt>"
+   ```
+
+   The prompt must be a user-level goal with no parameter hints, so the run measures what an agent can work out from the tool description alone. Driving it by script is what makes the pass repeatable, and it goes through DSH rather than calling the plugin's Host methods directly: only the conversation crosses the model-facing surface.
+2. **The reply is parsed, not asserted.** A reply is not deterministic, so no fixed expectation is encoded. An agent reads the printed transcript and decides whether the subagent actually started, whether it executed, and whether it is healthy.
 
 The flow to drive, and what to judge:
 
