@@ -42,6 +42,11 @@ DSH execution rules take precedence over conflicting generic protocol wording:
   processes. Do not claim stopped processes without evidence or reduce validation.
 - Mechanical identity, capacity, diff, review and release checks belong to the
   plugin. Preserve your role's semantic judgment; do not repeat mechanical gates.
+- The managed DSH path is the Host's: it reads the assignment's inputs, verifies
+  the executing identity and runs the pre-execution gate before any tool call.
+  Do not run `workflowctl.py validate` or `result-check` yourself first, and do
+  not call the gate's hook client directly. Write the contract and result
+  content the Host asked for; adopt and dispatch already validate and bind it.
 - Optional diagnostics reuse the task/attempt evidence. No per-command reports,
   mandatory retrospectives or no-incident records. Missing diagnostics never gate work.
 

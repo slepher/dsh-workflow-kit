@@ -745,7 +745,7 @@ export class Workflow {
   private async action(parent: string, input: WorkflowAction) {
     if (!parent || !input || typeof input.action!=='string') throw new Error('Parent and action required')
     if (input.action==='adopt') {
-      if (!input.generation || !isAbsolute(input.generation)) throw new Error('adopt requires `generation`: the ABSOLUTE path of an existing <repository>/agentwork/<goal>/generation-N directory (a relative path is refused). Author and validate that directory with the workflow skill, then pass its path; action "status" reports whether this session already adopted one')
+      if (!input.generation || !isAbsolute(input.generation)) throw new Error('adopt requires `generation`: the ABSOLUTE path of an existing <repository>/agentwork/<goal>/generation-N directory (a relative path is refused). Author that directory with the workflow skill; adopt validates the required execution fields, then pass its path; action "status" reports whether this session already adopted one')
       const plan: Plan = await this.python('export-dsh',input.generation)
       plan.repository=realpathSync(plan.repository)
       const goal=dirname(plan.generation)

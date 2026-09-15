@@ -89,8 +89,6 @@ def array(fields: dict[str, str], key: str, source: Path) -> list[str]:
         not isinstance(value, str) or not value.strip() for value in values
     ):
         raise Invalid(f"{source}: {key} requires nonempty strings")
-    if len(values) != len(set(values)):
-        raise Invalid(f"{source}: duplicate {key} entries")
     return values
 
 
@@ -110,7 +108,7 @@ def within(root: Path, relative: str) -> Path:
 
 
 def contract(path: Path, roles: set[str]) -> dict[str, str]:
-    fields, sections, text = read(path)
+    fields, _, _ = read(path)
     required(fields, ("Revision", "Kind", "Role", "Depends on", "Owned paths",
                       "Resources", "Inputs", "Review"), path)
     positive(fields["Revision"], path)
@@ -126,12 +124,10 @@ def contract(path: Path, roles: set[str]) -> dict[str, str]:
         raise Invalid(f"{path}: invalid Review")
     for key in ("Depends on", "Owned paths", "Resources", "Inputs"):
         values = array(fields, key, path)
-        if key == "Inputs" and not values:
-            raise Invalid(f"{path}: Inputs must bind evidence")
         if key == "Owned paths":
-            normalized = [scope(value) for value in values]
-            if len(normalized) != len(set(normalized)):
-                raise Invalid(f"{path}: duplicate normalized ownership")
+            # Each entry must still be a safe exact path; two spellings of the
+            # same path are no longer an authoring error.
+            [scope(value) for value in values]
             if values and fields["Role"] in {"context_collector", "evidence_runner", "full_tester"}:
                 raise Invalid(f"{path}: read-only role cannot own product writes")
     if fields.get("Lane", "yes") not in {"yes", "no"}:
@@ -142,20 +138,14 @@ def contract(path: Path, roles: set[str]) -> dict[str, str]:
         raise Invalid(f"{path}: Network must be disabled or loopback")
     if "Cwd" in fields and fields["Cwd"] != ".":
         scope(fields["Cwd"])
-    for key in ("Read paths", "Write paths", "Reports", "Ports"):
+    for key in ("Write paths", "Reports", "Ports"):
         if key in fields:
             for value in array(fields, key, path):
                 if value != ".": scope(value)
-    if fields.get("Lane") == "no" and "Read paths" not in fields:
-        raise Invalid(f"{path}: no-lane task requires explicit Read paths")
-    for heading in ("Goal", "Acceptance", "Constraints", "Validation", "Return when"):
-        if heading not in sections:
-            raise Invalid(f"{path}: missing {heading} section")
-        body = re.split(r"(?m)^## ", re.split(
-            rf"(?m)^## {re.escape(heading)}\s*\n", text, maxsplit=1
-        )[-1], maxsplit=1)[0]
-        if not body.strip():
-            raise Invalid(f"{path}: empty {heading} section")
+    # A read scope is a statement to the reader, not a write permission: it must
+    # still be a JSON string array, and prose about it is not an error.
+    if "Read paths" in fields:
+        array(fields, "Read paths", path)
     return fields
 
 
@@ -170,15 +160,12 @@ def validate(generation: Path) -> None:
     positive(plan["Revision"], plan_path)
     if not Path(plan["Repository"]).is_absolute():
         raise Invalid(f"{plan_path}: Repository must be absolute")
-    if not {"Goal", "Acceptance"} <= sections.keys():
-        raise Invalid(f"{plan_path}: Goal and Acceptance required")
     index_path = within(generation, "tasks.md")
     _, index, _ = read(index_path)
     roles, _ = load_role_profiles(Path(__file__).resolve().parents[1])
     entries = {key: value for key, value in index.items() if TASK.fullmatch(key)}
     if not entries:
         raise Invalid(f"{index_path}: no indexed tasks")
-    contracts: dict[str, dict[str, str]] = {}
     dependencies: dict[str, set[str]] = {}
     for task, entry in entries.items():
         required(entry, ("State", "Revision"), index_path)
@@ -192,7 +179,6 @@ def validate(generation: Path) -> None:
         fields = contract(path, set(roles))
         if fields["Revision"] != entry["Revision"]:
             raise Invalid(f"{task}: contract/index revision mismatch")
-        contracts[task] = fields
         deps = set(array(fields, "Depends on", path))
         if not deps <= entries.keys():
             raise Invalid(f"{task}: unknown dependency")
@@ -213,16 +199,6 @@ def validate(generation: Path) -> None:
 
     for task in entries:
         visit(task, set())
-    for left, a in contracts.items():
-        for right, b in contracts.items():
-            if left >= right or left in ancestors[right] or right in ancestors[left]:
-                continue
-            if set(json.loads(a["Resources"])) & set(json.loads(b["Resources"])):
-                continue
-            for p in map(scope, json.loads(a["Owned paths"])):
-                for q in map(scope, json.loads(b["Owned paths"])):
-                    if p == q or p.startswith(q + "/") or q.startswith(p + "/"):
-                        raise Invalid(f"{left}/{right}: concurrent ownership overlap at {p}/{q}")
 
 
 def result_check(result: Path, contract_path: Path, review: Path | None) -> None:
@@ -237,8 +213,6 @@ def result_check(result: Path, contract_path: Path, review: Path | None) -> None
     if fields["Contract revision"] != assigned["Revision"]:
         raise Invalid("result contract revision mismatch")
     positive(fields["Attempt"], result)
-    if result.name != f"{fields['Task']}-A{fields['Attempt']}.md" and not (result.name == "result.md" and result.parent.name == f"{fields['Task']}-A{fields['Attempt']}"):
-        raise Invalid("result filename does not match Task/Attempt")
     if fields["Outcome"] not in {"complete", "blocked", "needs-decision", "needs-verification"}:
         raise Invalid("invalid result Outcome")
     if review is not None:

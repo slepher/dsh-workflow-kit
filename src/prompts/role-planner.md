@@ -16,3 +16,12 @@ For managed workflow assignments, read the role protocol at
 
 For managed work, if it is absent, unreadable, or names another role, return
 `Status: role_protocol_blocked` and stop.
+
+DSH planning override:
+- Submit the plan and contracts you wrote; the Host reads that directory when it
+  adopts the generation and validates the required execution fields itself. Do
+  not schedule an evidence_runner, or create a task whose work is "verify the
+  contract format", to reproduce a check the Host already performs.
+- The contract CLI may be used by an explicit diagnostic task when a concrete
+  formatting question actually needs it. It is not a mandatory step for every
+  task, and a plan is not invalid because nobody ran it.

@@ -218,3 +218,58 @@ test("complete refuses outstanding disposition and accepts delivered, released e
   assert.equal(summary.complete, false, "discarded evidence never satisfies completion");
   assert.equal(summary.pendingDisposition.some(entry => entry.task === "T001"), true);
 });
+
+/**
+ * The cleanup removed author-format and static-overlap checks only. Everything
+ * that binds a result to its attempt, its workspace and its reviewed candidate
+ * must still refuse — and the Host, not the Python reader, is what refuses.
+ */
+test("the preserved Host gates still refuse what the removed plan-time checks used to", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-preserved-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo); git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); writeFileSync(join(repo, "b.txt"), "other\n");
+  git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1"); mkdirSync(join(generation, "tasks"), { recursive: true });
+  writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+  writeFileSync(join(generation, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n## T002\n- State: executable\n- Revision: 1\n");
+  // Two independent tasks may now declare the same ownership; the Host still
+  // decides whether a second one may actually start.
+  for (const id of ["T001", "T002"]) writeFileSync(join(generation, "tasks", `${id}.md`), `- Revision: 1\n- Kind: implementation\n- Role: coding_worker\n- Depends on: []\n- Owned paths: ["a.txt"]\n- Resources: []\n- Inputs: ["${base}"]\n- Review: independent\n## Goal\nChange a.txt.\n## Acceptance\nChanged.\n## Constraints\nOwn a.txt.\n## Validation\nRead it.\n## Return when\nDone.\n`);
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+  const write = (name, text) => { const path = join(root, name); writeFileSync(path, text); return path; };
+  const result = (attempt, candidate) => `- Task: T001\n- Contract revision: 1\n- Attempt: ${attempt}\n- Input snapshot: ${base}\n- Candidate snapshot: ${candidate}\n- Outcome: complete\n`;
+
+  await action({ action: "adopt", generation });
+  await action({ action: "dispatch", task: "T001" });
+  let summary = await action({ action: "status" });
+  const attempt = summary.tasks.find(item => item.task === "T001");
+  const lane = summary.lanes.find(item => item.name === attempt.lane);
+  await assert.rejects(action({ action: "dispatch", task: "T002" }), /Owned paths or exclusive resources remain occupied/,
+    "static overlap removal does not let two live attempts share a path");
+  await f.run(async () => { assert.equal(f.facts.get(attempt.workerId).turnId, attempt.turnId); f.finish(attempt.workerId, "unused placeholder"); });
+
+  writeFileSync(join(lane.path, "a.txt"), "changed\n"); git(lane.path, "add", "a.txt"); git(lane.path, "commit", "-m", "own change");
+  const owned = git(lane.path, "rev-parse", "HEAD");
+  writeFileSync(join(lane.path, "b.txt"), "unowned change\n"); git(lane.path, "add", "b.txt"); git(lane.path, "commit", "-m", "unowned change");
+  const outside = git(lane.path, "rev-parse", "HEAD");
+
+  await assert.rejects(action({ action: "record-result", task: "T001", result: write("wrong-attempt.md", result(9, owned)) }),
+    /Result must bind this attempt\/input/);
+  await assert.rejects(action({ action: "record-result", task: "T001", result: write("outside.md", result(1, outside)) }),
+    /Candidate changes files outside frozen ownership/);
+
+  git(lane.path, "checkout", "--detach", owned);
+  await action({ action: "record-result", task: "T001", result: write("owned.md", result(1, owned)) });
+  const review = (await action({ action: "status" })).tasks.find(item => item.task === "T001").review;
+  await f.run(async () => {
+    assert.equal(f.facts.get(review.worker).turnId, review.turn);
+    f.finish(review.worker, JSON.stringify({ candidate: owned, input: base, verdict: "changes-required", findings: "Needs another pass." }));
+  });
+  await assert.rejects(action({ action: "accept", task: "T001" }), /Independent candidate review has not passed/);
+  await assert.rejects(action({ action: "release", task: "T001", processesStopped: true }), /Deliver or archive retained evidence before releasing the lane/);
+  await assert.rejects(action({ action: "complete" }), /outstanding disposition/);
+  summary = await action({ action: "status" });
+  assert.equal(summary.tasks.find(item => item.task === "T001").candidate, owned);
+});

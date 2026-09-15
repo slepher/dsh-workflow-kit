@@ -77,6 +77,27 @@ Token accounting is read-only: each native turn's usage reaches the Host through
 
 The Host registers `codex_workflow` for adopted task contracts and uses native child creation, prompt queue/steer and interruption. It reads execution facts through `codexExecution.read`; a native completed turn remains pending workflow acceptance. Unknown execution never authorizes takeover or redispatch. Workflow unload removes its tool and profile RPC; it does not close Codex execution or delete Session history.
 
+## Contract reading: what is relaxed and what is not
+
+The DSH path does not ask an author, or an agent, to run `workflowctl.py validate` or
+`result-check` before adopting. `adopt` reads the directory and validates the machine
+fields any consumer has to be able to read; the Host then checks identity, live
+ownership, capacity, diff, review, delivery and release itself. `scripts/workflowctl.py`
+remains the reader for those machine fields, and Python 3 remains a dependency.
+
+What the reader no longer requires is authoring ceremony rather than identity: a fixed
+set of Markdown prose headings on the plan or the contract, a particular result file
+name, an explicit read scope for a no-lane task, non-empty `Inputs`, or unique spellings
+inside an array or an ownership list. What it still refuses is anything a consumer could
+misread: missing or mistyped machine fields, a non-array where an array is required, an
+unsafe exact-path violation, an unknown/retired/cyclic dependency, a contract/index
+revision mismatch, and a result that does not bind its own task, revision, attempt,
+input or candidate.
+
+The external native skill keeps its own full heading set and its own rules. DSH's
+override applies to the DSH path only: do not generalize this relaxation to native runs,
+and do not edit the native skill to match.
+
 ## Build and validation
 
 Requires Node >=22.19, Python 3, Git, `dsh-codex-app-provider` 0.1.0 and a coordinated DSH package set containing the native execution interfaces. The checked-in dependency locks identify local tarballs built from DSH 0.1.5-rc.1 source with changes; registry rc.1 alone does not implement those interfaces.
