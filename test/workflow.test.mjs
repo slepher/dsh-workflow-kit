@@ -151,3 +151,70 @@ test("capacity counts every Session that adopted the same repository", async t =
   assert.deepEqual(summary.tasks.map(attempt => attempt.task).sort(), ["T001", "T002"],
     "the same Session keeps dispatching while another owns the repository");
 });
+
+/**
+ * Completion is a check, not a transition. It reuses the state the release path
+ * already guarantees instead of inventing a second "done", it never performs a
+ * Git operation, and it still allows a manager to end its turn while a child
+ * runs.
+ */
+test("complete refuses outstanding disposition and accepts delivered, released evidence", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-complete-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo); git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1"); mkdirSync(join(generation, "tasks"), { recursive: true });
+  writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+  writeFileSync(join(generation, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n");
+  writeFileSync(join(generation, "tasks", "T001.md"), `- Revision: 1\n- Kind: investigation\n- Role: evidence_runner\n- Depends on: []\n- Owned paths: []\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n- Lane: no\n- Cwd: .\n- Read paths: ["."]\n## Goal\nInspect.\n## Acceptance\nReturn evidence.\n## Constraints\nRead only.\n## Validation\nCheck fixture.\n## Return when\nDone.\n`);
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+  await action({ action: "adopt", generation });
+
+  let summary = await action({ action: "status" });
+  assert.equal(summary.complete, false);
+  assert.deepEqual(summary.pendingDisposition, [{ task: "T001", state: "undispatched", next: "dispatch" }],
+    "status reports the same disposition complete refuses with, and the existing next action");
+  await assert.rejects(action({ action: "complete" }), /Workflow is not complete.*"task":"T001".*"next":"dispatch"/);
+
+  await action({ action: "dispatch", task: "T001" });
+  summary = await action({ action: "status" });
+  assert.equal(summary.complete, false);
+  assert.equal(summary.pendingDisposition.some(entry => entry.task === "T001" && entry.state === "running"), true,
+    "a running child is outstanding disposition, and the manager may still end its turn");
+  assert.equal(summary.pendingDisposition.some(entry => entry.child !== undefined), true, "its child is still open");
+  const attempt = summary.tasks[0];
+  // Waiting is not a Stop loop: nothing about the gate continues the manager.
+  await f.run(async () => {
+    assert.equal(f.facts.get(attempt.workerId).turnId, attempt.turnId);
+    f.finish(attempt.workerId, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`);
+  });
+  await action({ action: "record-result", task: "T001" });
+  const disposition = async () => (await action({ action: "status" })).pendingDisposition.filter(entry => entry.task === "T001");
+  assert.deepEqual(await disposition(), [{ task: "T001", attempt: 1, state: "candidate", next: "accept" }]);
+  await action({ action: "accept", task: "T001" });
+  assert.deepEqual(await disposition(), [{ task: "T001", attempt: 1, state: "accepted", next: "integrate" }]);
+  await action({ action: "integrate", task: "T001" });
+
+  // Delivered but not released: the lane and the child are still this run's.
+  summary = await action({ action: "status" });
+  assert.equal(summary.complete, false, "delivery alone is not completion");
+  assert.deepEqual(await disposition(), [{ task: "T001", attempt: 1, state: "delivered", next: "release" }]);
+  await assert.rejects(action({ action: "complete" }), /outstanding disposition/);
+
+  const head = git(repo, "rev-parse", "HEAD");
+  await action({ action: "release", task: "T001", processesStopped: true });
+  summary = await action({ action: "status" });
+  assert.equal(summary.complete, true);
+  assert.deepEqual(summary.pendingDisposition, []);
+  assert.deepEqual(await action({ action: "complete" }), { complete: true });
+  assert.equal(git(repo, "rev-parse", "HEAD"), head, "completion performs no Git operation");
+
+  // Archived evidence is discarded evidence: it cannot stand in for delivery.
+  const run = f.store.read().runs[0];
+  run.attempts[0].discarded = true;
+  f.store.save();
+  summary = await action({ action: "status" });
+  assert.equal(summary.complete, false, "discarded evidence never satisfies completion");
+  assert.equal(summary.pendingDisposition.some(entry => entry.task === "T001"), true);
+});

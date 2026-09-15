@@ -122,6 +122,11 @@ type ConsultRecord = { id: string; /** Execution the conclusion returns to; a ha
   state: 'running' | 'answered' | 'delivered'; answerTurnId?: string }
 type Attempt = { supersededRevision?: number; task: Task; number: number; worker: string; turn?: string; initialPrompt?: string; initialStartKey?: string; lane?: string; allocation?: Boundary & { ports: Record<string, number> }; base: string; contract: string; directory: string; state: 'reserved'|'running'|'candidate'|'accepted'|'delivered'|'archived'|'released'|'unknown'|'blocked'; discarded?: boolean; candidate?: string; result?: string; review?: Review; previousReviews?: Review[]; integration?: Integration; previousIntegrations?: Integration[]; error?: string } & AttemptBinding
 type Lane = { name: string; path: string; owner?: string }
+/**
+ * One reason a run is not complete yet: the frozen state that stands in the way
+ * and the workflow action that already exists to move it.
+ */
+type PendingDisposition = { task?: string; attempt?: number; lane?: string; child?: string; state: string; next: string }
 type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
 export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean;
   role?: string; child?: string; stop?: boolean; cwd?: string; name?: string; writes?: readonly string[]; network?: 'disabled' | 'loopback' }
@@ -581,9 +586,60 @@ export class Workflow {
       }
     }
   }
+  /**
+   * Whether one adopted generation has finished, and what still blocks it.
+   *
+   * This is a deterministic read of the state the Host already keeps; it
+   * performs no Git operation and changes nothing. Waiting for a running child,
+   * a review, a consultation or the user is not "complete", but neither does it
+   * forbid the manager's turn from ending.
+   * @param run - the adopted generation.
+   * @returns whether the run is complete, with one entry per blocking fact.
+   */
+  private completion(run: Run): { complete: boolean; pendingDisposition: PendingDisposition[] } {
+    const pending: PendingDisposition[] = []
+    for (const task of Object.values(run.plan.tasks)) {
+      const attempts = run.attempts.filter(a => a.task.id === task.id)
+      // Release only accepts delivered or archived evidence, and archive sets
+      // `discarded`, so this reuses the existing lifecycle rather than adding a
+      // second notion of "done". A no-code delivery has no integration and must
+      // not be required to grow one.
+      const delivered = attempts.some(a => a.task.revision === task.revision && a.state === 'released'
+        && a.discarded !== true && a.candidate !== undefined && a.result !== undefined)
+      if (!delivered) {
+        const latest = attempts.filter(a => a.task.revision === task.revision).at(-1) ?? attempts.at(-1)
+        pending.push({ task: task.id, ...(latest === undefined ? {} : { attempt: latest.number }),
+          state: latest?.state ?? 'undispatched', next: latest === undefined ? 'dispatch' : this.nextAction(latest) })
+      }
+    }
+    for (const a of run.attempts) {
+      if (a.state === 'released') continue
+      if (pending.some(entry => entry.task === a.task.id)) continue
+      pending.push({ task: a.task.id, attempt: a.number, state: a.state, next: this.nextAction(a) })
+    }
+    // A lane is released only by the existing release action, which is also what
+    // closes the children that ran on it.
+    for (const lane of run.lanes) if (lane.owner !== undefined) pending.push({ lane: lane.name, state: 'occupied', next: 'release' })
+    const open = Object.values(this.workers.store.read().nativeChildren ?? {})
+      .filter(record => record.parentSessionId === run.parent && !record.closed)
+    for (const child of open) pending.push({ child: child.id, state: 'open', next: 'release' })
+    return { complete: pending.length === 0, pendingDisposition: pending }
+  }
+
+  /** The existing action that moves one blocked attempt forward. */
+  private nextAction(a: Attempt): string {
+    if (a.state === 'reserved' || a.state === 'unknown') return 'dispatch'
+    if (a.state === 'candidate') return 'accept'
+    if (a.state === 'accepted') return 'integrate'
+    if (a.state === 'blocked') return 'continue'
+    return 'release'
+  }
+
   private summary(run: Run) {
+    const completion = this.completion(run)
     const accepted = new Set(run.attempts.filter(a=>!a.discarded&&['accepted','delivered','released'].includes(a.state)&&a.candidate&&a.task.revision===run.plan.tasks[a.task.id]?.revision).map(a=>a.task.id))
     return {id:run.id,generation:run.plan.generation,revision:run.plan.revision,workflowSkillDir:this.skillRoot,file:join(this.directory,'orchestration.json'),
+      complete:completion.complete,pendingDisposition:completion.pendingDisposition,
       ready:Object.values(run.plan.tasks).filter(t=>!run.attempts.some(a=>a.task.id===t.id) && t.depends.every(d=>accepted.has(d))).map(t=>t.id),
       handoffSupport:this.workers.handoffSupport(), usage:aggregateUsage(run.attempts.flatMap(a=>Object.values(a.usage??{}))),      coordination:this.coordinationUsage(run), cost:'native token counts only; no billing feed is configured, so no monetary cost is reported', lanes:run.lanes, tasks:run.attempts.map(a=>({task:a.task.id,attempt:a.number,state:a.state,supersededRevision:a.supersededRevision,workerId:a.worker,activeWorker:this.activeWorker(a),turnId:a.turn,lane:a.lane,allocation:a.allocation,base:a.base,candidate:a.candidate,result:a.result,outcome:a.outcome,consults:a.consults,strategy:a.effectiveStrategy??a.strategy,tier:a.tier,phase:a.phase,usage:this.attemptUsage(a),handoff:a.handoff?{requestId:a.handoff.requestId,fromWorker:a.handoff.fromWorker,toWorker:a.handoff.toWorker,sourceTurnId:a.handoff.sourceTurnId,targetTier:a.handoff.targetTier,targetConfig:a.handoff.targetConfig,status:a.handoff.status,threadId:a.handoff.threadId,messageId:a.handoff.messageId,targetTurnId:a.handoff.targetTurnId,prompt:a.handoff.prompt}:undefined,control:a.control,review:a.review?{worker:a.review.worker,turn:a.review.turn,verdict:a.review.verdict}:undefined, integration:a.integration?{id:a.integration.id,target:a.integration.target,candidate:a.integration.candidate,conflict:a.integration.conflict,strategy:a.integration.effectiveStrategy,reviewer:a.integration.review?.worker,verdict:a.integration.review?.verdict,resolution:a.integration.resolution,error:a.integration.error}:undefined,error:a.error}))}
   }
@@ -733,6 +789,13 @@ export class Workflow {
     const run=this.current(parent)
     if (input.action==='status') { await this.observe(run); return this.summary(run) }
     if (input.action==='dispatch') { await this.dispatch(run,input); return this.summary(run) }
+    // Completion is a check, not a transition: it changes nothing and the next
+    // adopt recomputes it from the then-current state.
+    if (input.action==='complete') {
+      const { complete, pendingDisposition } = this.completion(run)
+      if (!complete) throw new Error(`Workflow is not complete; outstanding disposition: ${JSON.stringify(pendingDisposition)}`)
+      return { complete: true }
+    }
     const a=this.attempt(run,input)
     if (input.action==='record-result') {
       if (!['running','candidate','unknown','blocked'].includes(a.state)) throw new Error(`Task is ${a.state}`)

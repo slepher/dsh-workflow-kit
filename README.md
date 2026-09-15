@@ -41,6 +41,26 @@ The bound strategy decides which coding configuration runs, which phase prompt t
 
 Each coding dispatch and each integration records its effective strategy plus the sup/def Profile snapshot it was bound to. Later Profile or settings edits therefore never rewrite a running execution or a prepared integration; a refreshed integration binds the settings in force when it is prepared. Integration review and repair keep their own roles and permissions (a reviewer stays read-only, a repair `coding_worker` keeps its write scope) while the integrate strategy selects the model configuration, and ordinary task review keeps the reviewer configuration.
 
+## Session gate
+
+Every child this Host starts is bound before it starts to `{ role, hook, args }` and that binding is stored with its record. `role` is this plugin's own business label — the provider never enumerates or interprets it. The rules live in one deterministic function (`src/gate.ts`); both entry points call it, and neither calls a model:
+
+- the **DSH native** path installs one global `ctx.tools.guard()` that answers only for a Session this Host registered (a managed child's stored binding, or the manager's binding derived from the run it adopted), so a denial happens before the tool body;
+- the **Codex** path registers the same function with `ctx.codexToolGate`, and the provider carries every PreToolUse hook call to it over the socket its hook command talks to. See the provider README for the deployment prerequisite.
+
+What is checked:
+
+- A **manager** is refused the known shell entry points (`bash`, `pwsh`, `Bash`, `exec_command`, `shell`, `shell_command`, `write_stdin`) and may write only its generation's `summary.md` (plus whatever auxiliary grants an assignment named). A **registered child** may run a shell: this gate does not read a program's file effects, and the existing sandbox still applies.
+- Every registered Session is refused the scheduling entry points — `subagent`, `subagent_fork`, `workflow`, `ralph`, `spawn_teammate`, `wait_agent`, `team_task_*`, `send_message`, `interrupt_agent`, `codex_workers`, and the Codex `spawn_agent`/`Agent`/`resume_agent`/`close_agent`. Read-only queries (`list_agents`, `list_subagent_models`, `job_*`) stay available.
+- Known file writes are matched against the assignment's own grants: `write`/`edit` (`file_path`), `str_replace_editor` (`path`; `view` is a read), and Codex `apply_patch` (every Add/Update/Delete/Move path, the whole patch refused if any one path is not authorized). A coding assignment owns its task's `Owned paths` one by one — never a whole lane — plus its declared Write paths, its concrete report paths and its artifacts. A review, a consultation, an integration repair and a non-coding task own only what they were assigned. Paths are checked both lexically and after symlink resolution, and product grants are additionally confined to the lane.
+- A file write whose Session cwd is missing is refused rather than resolved against the server's launch directory, and a cwd that is not the assignment's is refused rather than rewritten.
+
+Deliberately **not** covered, and not claimed: file effects inside a shell program, MCP tools registered as `mcp__<server>__<name>`, and `cordis_define`/`cordis_run`, which can register and run arbitrary code at runtime. Unknown tools are left to the rest of the pipeline.
+
+A denial always starts with `workflow gate: `, so it is machine-recognizable in a session log. A Session with no binding — an ordinary delegation, a legacy record written before the gate existed — is untouched.
+
+`status` reports `complete` and `pendingDisposition`; `complete` performs the same check and refuses with the outstanding disposition (task, attempt, lane or child, state and the existing next action) instead of guessing. It performs no Git operation: delivery, merge, archive and release stay with their existing actions, and a manager waiting on a running child may still end its turn.
+
 ## Execution control and cost
 
 A phase may authorize a worker to end its turn with a control report instead of a final result. Only a `bootstrap` opening phase authorizes `Execution control: handoff`; the Host then creates a successor child of the same task and attempt on the bound def configuration, as a sibling under the same parent Session, and records the source turn, target tier, request id and message id. The stable identity is the assignment, its task/attempt/lane and — inside Codex — its original thread, never the DSH child: the source keeps its history and reports but cannot continue. The continuation is delivered once: repeated observation reuses the recorded handoff, and the handoff turn is never read as a candidate result. A report the phase does not authorize is recorded on the attempt as a fact (`control`), never performed.
