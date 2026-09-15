@@ -85,6 +85,13 @@ test("a bootstrap opening report continues the task on a def successor child", a
   // The successor child is created with the bound def configuration and the
   // continuation prompts, on the same workspace and authorization boundary.
   const created = f.calls.find(call => call.id === handoff.toWorker);
+  // A tier handoff is not a contract change: the successor continues the very
+  // same scope, and the provider is told before the successor starts.
+  assert.deepEqual(f.store.read().nativeChildren[handoff.toWorker].gate, f.store.read().nativeChildren[attempt.workerId].gate,
+    "the continuation keeps the assignment's gate");
+  const successorBind = f.gateBinds.filter(bind => bind.sessionId === handoff.toWorker);
+  assert.equal(successorBind.length, 1, "the successor is registered with the provider exactly once");
+  assert.equal(successorBind[0].started, false, "and before its first dispatch");
   assert.equal(created.options.model, "def-model");
   assert.equal(created.options.reasoningEffort, "medium");
   assert.match(f.promptText(created), /coding_worker \[coding-bootstrap-continuation,coding-adaptive\]/, "the successor's continuation instructions open its own conversation");
@@ -380,6 +387,10 @@ test("a cross-provider handoff starts a sibling successor with the sourced facts
   assert.match(handoff.prompt, /Do not hand off again/);
 
   const created = f.calls.find(call => call.id === handoff.toWorker);
+  assert.deepEqual(f.store.read().nativeChildren[handoff.toWorker].gate, f.store.read().nativeChildren[attempt.workerId].gate,
+    "a cross-provider continuation keeps the same task scope");
+  assert.equal(f.gateBinds.some(bind => bind.sessionId === handoff.toWorker), false,
+    "a non-Codex successor is checked by the DSH guard through its stored gate, not by the provider");
   assert.equal(created.options.provider, "deepseek-official", "the successor runs under the target provider");
   assert.equal(created.options.model, "deepseek-flash");
   assert.equal(f.facts.get(handoff.toWorker).threadId, `thread-${handoff.toWorker}`, "the successor owns no Codex thread");
