@@ -65,6 +65,10 @@ That last case is the one place where a **DSH-native** child differs from a Code
 
 A refusal is written to be acted on, not just obeyed: it names the path that was refused **and** the paths the assignment did authorize (a directory grant carries a trailing separator). A worker that resolved a relative path against the wrong directory can read the granted paths off the denial and correct itself without another round trip to the manager. A worker also writes the documents it was told to produce outside its lane — its declared report paths and its artifacts directory are granted as auxiliary writes, while an unassigned neighbour in that same results directory is not.
 
+One goal is one repository, and lanes live under that goal's directory (`agentwork/<goal>/.lanes/lane-NN`), so two goals never share a worktree. The Host enforces the plan's own declared worker budget, the live ownership of an assigned path, and a task's declared workspace when it names no lane. It does **not** police concurrency *between* goals: whether two goals advance at the same time is the operator's decision, and a separate repository root is how that decision is expressed. Work that should share a directory is asking for a worktree the operator creates and names in the task's `Cwd` — which must still be inside the repository, because an assignment never escapes its workspace.
+
+A file write inside the repository root rather than a lane is still an assignment like any other: the gate authorizes its paths and refuses everything else, and the manager Session is likewise expected to run with the repository as its workspace, since that is what its own binding records.
+
 ## Build and validation
 
 Requires Node >=22.19, Python 3, Git, `dsh-codex-app-provider` 0.1.0 and a coordinated DSH package set containing the native execution interfaces. The checked-in dependency locks identify local tarballs built from DSH 0.1.5-rc.1 source with changes; registry rc.1 alone does not implement those interfaces.
