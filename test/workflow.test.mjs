@@ -244,9 +244,14 @@ test("a native child is told the workspace its own tools resolve against", async
   const summary = await action({ action: "status" });
   const attempt = summary.tasks[0], lane = summary.lanes.find(item => item.name === attempt.lane);
   const prompt = f.promptText(f.calls.find(call => call.id === attempt.workerId));
-  assert.match(prompt, /this Session's workspace is /, "a native child is told where its own tools resolve relative paths");
+  assert.match(prompt, /This Session's workspace is /, "a native child is told where its own tools resolve relative paths");
   assert.ok(prompt.includes(repo), "the workspace it names is the one the child really reports");
   assert.ok(prompt.includes(lane.path), "and the assigned directory is still stated");
+  // A relative path is not the only thing that resolves against a workspace:
+  // a build, a test or a git call acts there too, so the prompt must aim them.
+  assert.match(prompt, new RegExp(`run every command — build, test, git — with ${lane.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} as its working directory`),
+    "commands are aimed at the assigned directory, not at the repository");
+  assert.match(prompt, /pass workdir /, "and the child is told how to aim them");
   assert.match(prompt, /write the assigned files by their absolute paths or relative to that workspace/);
   assert.equal(f.facts.get(attempt.workerId).cwd, lane.path, "the execution itself still runs in the assigned lane");
 });
