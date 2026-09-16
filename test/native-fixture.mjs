@@ -53,7 +53,7 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
         ...(inbound === undefined ? {} : { handoffFrom: inbound.fromSessionId }) };
     },
   } : undefined;
-  const begin = (id, options, text) => {
+  const begin = (id, options, text, delegating = parent) => {
     const previous = nativeFacts.get(id), number = (previous?.number ?? 0) + 1;
     const handoff = handoffs.get(id);
     // A successor's first request must carry exactly the execution the recorded
@@ -65,7 +65,7 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
       throw new Error("successor execution must match the recorded handover");
     }
     const childCwd = options?.execution?.boundary.cwd ?? previous?.cwd ?? cwd;
-    const child = { id, session: { id, header: { parentSession: parent.id, cwd: childCwd },
+    const child = { id, session: { id, header: { parentSession: delegating.id, cwd: childCwd },
       snapshotEvents: () => sessionEvents?.(id) ?? [] }, status: "running",
       options: { provider: options.provider, model: options.model,
         ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
@@ -102,9 +102,9 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
       : name === "codexToolGate" ? toolGate
       : name === "sessionPersistence" ? persistence : undefined,
     codexExecution: execution, codexToolGate: toolGate, ...(handoffService === undefined ? {} : { codexHandoff: handoffService }), subagents: {
-    async startContinuable(spec) { calls.push(structuredClone({ id: spec.childId, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt) }; },
-    async [Symbol.for("dsh.subagent.deliverPrompt")](_parent, id, content, _source, _signal, delivery) {
-      calls.push({ id, delivery, content }); return begin(id, nativeFacts.get(id), content);
+    async startContinuable(spec) { calls.push(structuredClone({ id: spec.childId, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt, spec.request.parent) }; },
+    async [Symbol.for("dsh.subagent.deliverPrompt")](delegating, id, content, _source, _signal, delivery) {
+      calls.push({ id, delivery, content }); return begin(id, nativeFacts.get(id), content, delegating);
     },
     interrupt(id) { calls.push({ id, interrupt: true }); nativeFacts.get(id).state = "interrupt-requested"; },
   } };

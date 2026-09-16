@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -254,6 +254,61 @@ test("a native child is told the workspace its own tools resolve against", async
   assert.match(prompt, /pass workdir /, "and the child is told how to aim them");
   assert.match(prompt, /write the assigned files by their absolute paths or relative to that workspace/);
   assert.equal(f.facts.get(attempt.workerId).cwd, lane.path, "the execution itself still runs in the assigned lane");
+});
+
+/**
+ * Worktrees are a repository resource, not a goal artifact: a finished goal must
+ * not leave a directory full of worktrees behind, and the next goal in the same
+ * repository reuses what is already there.
+ */
+test("a repository keeps one lane pool that the next goal reuses", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-lane-pool-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo); git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD");
+  const goal = name => {
+    const dir = join(repo, "agentwork", name, "generation-1"); mkdirSync(join(dir, "tasks"), { recursive: true });
+    writeFileSync(join(dir, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\n${name}\n## Acceptance\nDone.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+    writeFileSync(join(dir, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n");
+    writeFileSync(join(dir, "tasks", "T001.md"), `- Revision: 1\n- Kind: implementation\n- Role: coding_worker\n- Depends on: []\n- Owned paths: ["a.txt"]\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n## Goal\nChange a.txt.\n## Acceptance\nChanged.\n## Constraints\nOwn a.txt.\n## Validation\nRead it.\n## Return when\nDone.\n`);
+    return dir;
+  };
+  const f = fixture(t, { cwd: repo, roles: Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])) });
+  // A second Session in the same repository, adopting the next goal.
+  const second = { id: "parent2", session: { id: "parent2", header: { cwd: repo } }, status: "running" };
+  f.ctx.agents.set(second.id, second); f.ctx.sessions.set(second.session.id, second.session);
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const asA = input => f.run(() => workflow.execute("parent", input));
+  const asB = input => f.workers.run(second, new AbortController().signal, () => workflow.execute("parent2", input));
+
+  await asA({ action: "adopt", generation: goal("goalA") });
+  await asA({ action: "dispatch", task: "T001" });
+  let summary = await asA({ action: "status" });
+  const attempt = summary.tasks[0], lane = summary.lanes[0];
+  assert.equal(lane.path, join(repo, "agentwork", ".lanes", "lane-01"), "the worktree lives in the repository's pool");
+  assert.equal(existsSync(join(repo, "agentwork", "goalA", ".lanes")), false, "and never inside the goal that is using it");
+
+  // Deliver and release it: releasing is what hands the worktree to the next goal.
+  writeFileSync(join(lane.path, "a.txt"), "changed by A\n"); git(lane.path, "add", "a.txt"); git(lane.path, "commit", "-m", "A change");
+  const candidate = git(lane.path, "rev-parse", "HEAD");
+  await f.run(async () => {
+    assert.equal(f.facts.get(attempt.workerId).turnId, attempt.turnId);
+    f.finish(attempt.workerId, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${candidate}\n- Outcome: complete\n`);
+  });
+  await asA({ action: "record-result", task: "T001" });
+  await asA({ action: "accept", task: "T001" });
+  await asA({ action: "integrate", task: "T001" });
+  await asA({ action: "release", task: "T001", processesStopped: true });
+  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "changed by A\n", "goal A delivered into the target");
+
+  await asB({ action: "adopt", generation: goal("goalB") });
+  await asB({ action: "dispatch", task: "T001" });
+  const next = await asB({ action: "status" });
+  assert.equal(next.lanes.length, 1, "the next goal creates no second worktree");
+  assert.equal(next.lanes[0].path, lane.path, "it reuses the released one");
+  assert.equal(next.lanes[0].owner, "T001-A1", "and takes ownership of it");
+  assert.equal(existsSync(join(repo, "agentwork", "goalB", ".lanes")), false, "goal B also leaves nothing of its own behind");
+  assert.equal(git(lane.path, "rev-parse", "HEAD"), base, "the reused worktree is reset to the new goal's input");
 });
 
 /**

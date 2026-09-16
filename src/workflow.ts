@@ -25,6 +25,22 @@ type Review = { worker: string; turn?: string; candidate: string; target?: strin
 type IntegrationBinding = { strategy: CodingStrategy; effectiveStrategy: EffectiveStrategy; tier: Tier; coding: { def: RoleInput; sup: RoleInput }; profile: string }
 type Integration = { id: string; path: string; target: string; source: string; candidate?: string; conflict: boolean; requiredReview: boolean; review?: Review; resolution?: string; error?: string; delivered?: string } & Partial<IntegrationBinding>
 
+/**
+ * The `.lanes` directory a run's worktrees live in.
+ *
+ * Worktrees are a repository-level resource, not a goal artifact: every lane a
+ * run creates goes under `<repository>/agentwork/.lanes`, which every goal in
+ * that repository shares. A finished goal therefore leaves no worktree inside
+ * its own directory to clean up, and the next goal reuses the ones already
+ * there. A record written while lanes still lived inside a goal keeps the root
+ * its own lanes already name, so nothing persisted is rewritten or relocated.
+ * @param run - the adopted generation.
+ * @returns the absolute `.lanes` directory this run allocates from.
+ */
+function laneRoot(run: Run): string {
+  return run.lanes[0] === undefined ? join(run.plan.repository, 'agentwork', '.lanes') : dirname(run.lanes[0].path)
+}
+
 /** Summed token accounting for one task or one run. */
 type UsageTotal = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number; calls: number; unreported: number }
 
@@ -152,11 +168,11 @@ export class Workflow {
     }
     const pools=new Map<string,Lane[]>()
     for (const run of this.runs) {
-      const goal=dirname(run.plan.generation),pool=pools.get(goal)
+      const root=laneRoot(run),pool=pools.get(root)
       if (pool) {
-        if (JSON.stringify(pool)!==JSON.stringify(run.lanes)) throw new Error('Conflicting persisted goal lane pools; resolve ownership before starting')
+        if (JSON.stringify(pool)!==JSON.stringify(run.lanes)) throw new Error('Conflicting persisted lane pools; resolve ownership before starting')
         run.lanes=pool
-      } else pools.set(goal,run.lanes)
+      } else pools.set(root,run.lanes)
     }
     this.syncLanes()
   }
@@ -798,7 +814,10 @@ export class Workflow {
         }
         return this.summary(existing)
       }
-      const run: Run={id:randomUUID(),parent,plan,lanes:this.runs.find(r=>dirname(r.plan.generation)===dirname(plan.generation))?.lanes??[],attempts:[]}
+      // A new adoption allocates from the repository's shared lane pool, so a
+      // lane a finished goal released is available to this one.
+      const shared=join(plan.repository,'agentwork','.lanes')
+      const run: Run={id:randomUUID(),parent,plan,lanes:this.runs.find(r=>laneRoot(r)===shared)?.lanes??[],attempts:[]}
       this.runs.push(run);this.save();return this.summary(run)
     }
     // Reading the catalogue is not a workflow operation: it answers before any
@@ -994,7 +1013,7 @@ export class Workflow {
       const limit=run.plan.policy.expand?run.plan.policy.max:run.plan.policy.initial
       if (run.lanes.length>=limit) throw new Error('No idle lane within planner capacity')
       const name=`lane-${String(run.lanes.length+1).padStart(2,'0')}`
-      lane={name,path:this.scoped(run.plan.repository,relative(run.plan.repository,join(dirname(run.plan.generation),'.lanes',name)))};run.lanes.push(lane)
+      lane={name,path:this.scoped(run.plan.repository,relative(run.plan.repository,join(laneRoot(run),name)))};run.lanes.push(lane)
     }
     const directory=this.scoped(run.plan.repository,relative(run.plan.repository,join(run.plan.generation,'attempts',`${task.id}-A${number}`)));mkdirSync(directory,{recursive:true,mode:0o700})
     const cwd=lane?.path ?? this.scoped(run.plan.repository,task.cwd??'.')
