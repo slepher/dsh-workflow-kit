@@ -187,9 +187,23 @@ test("a file write without a usable cwd is refused rather than guessed", t => {
   const f = fixture(t);
   const binding = coding(f);
   assert.match(denial(binding, "write", { file_path: join(f.lane, "src", "a.ts") }, ""), /no working directory/);
-  assert.match(denial(binding, "write", { file_path: join(f.lane, "src", "a.ts") }, f.other), /is not the assigned cwd/);
   // A shell call needs no cwd: this gate does not resolve anything for it.
   assert.equal(allowed(binding, "bash", { command: "true" }, ""), true);
+});
+
+test("an assignment authorizes paths, not the directory the caller reports", t => {
+  const f = fixture(t);
+  const binding = coding(f);
+  // A DSH-native child reports its parent's workspace while its assignment was
+  // created in a lane. The authorized absolute path is authorized from there.
+  assert.equal(allowed(binding, "write", { file_path: join(f.lane, "src", "a.ts") }, f.root), true);
+  assert.equal(allowed(binding, "write", { file_path: join(f.lane, "src", "a.ts") }, f.other), true);
+  // A relative path still resolves against the directory the caller reports, so
+  // it lands wherever that directory actually is — and is refused if not granted.
+  assert.match(denial(binding, "write", { file_path: "src/a.ts" }, f.root), /outside assigned paths/);
+  // The scope itself is unchanged: the neighbouring file is still not authorized.
+  assert.match(denial(binding, "write", { file_path: join(f.lane, "src", "b.ts") }, f.root), /outside assigned paths/);
+  assert.match(denial(binding, "write", { file_path: join(f.outside, "secret.ts") }, f.root), /outside assigned paths/);
 });
 
 test("the binding's role never interprets the provider's vocabulary", t => {

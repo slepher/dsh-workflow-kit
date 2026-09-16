@@ -17,8 +17,11 @@ import { buildGateArgs, gateBinding } from "../lib/gate.js";
  * This is the DSH-native half of the gate's acceptance: a denial has to happen
  * before the tool body runs, which only a real registry can demonstrate.
  */
-async function host(t) {
+async function host(t, options = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "workflow-native-gate-")));
+  // The manager Session's own workspace; a Session that adopted the generation
+  // while running somewhere else is still an ordinary configuration.
+  const managerCwd = options.managerCwd ?? root;
   const lane = join(root, "agentwork", "goal", ".lanes", "lane-01");
   const generation = join(root, "agentwork", "goal", "generation-1");
   const artifacts = join(generation, ".artifacts", "T1-A1", "worker");
@@ -36,6 +39,10 @@ async function host(t) {
     boundary: { cwd: lane, writableRoots: [lane], network: "disabled", ports: {} }, dispatches: [], acceptance: {},
     ...(gate === undefined ? {} : { gate }) });
   seed.putNativeChild(record("child", codingGate));
+  // The same assignment, on a child whose Session reports its parent's workspace
+  // instead of the lane — what the stock subagent runtime gives every native
+  // child, and what the shipped Codex path hides by starting the thread in the lane.
+  seed.putNativeChild(record("lane-worker", codingGate));
   seed.putNativeChild(record("legacy", undefined));
   seed.read().runs.push({ id: "run", parent: "parent", plan: { generation, revision: 1, repository: root,
     target: "refs/heads/main", base: "HEAD", delivery: "working-tree", text: "", policy: { initial: 1, max: 1, expand: false, bases: [] }, tasks: {} },
@@ -77,9 +84,10 @@ async function host(t) {
 
   const scope = ctx.plugin(() => {});
   const agent = (id, cwd, parentSession) => ({ id, ctx: scope.ctx, session: { id, header: { cwd, ...(parentSession === undefined ? {} : { parentSession }) } }, status: "idle", followup() {} });
-  const parent = agent("parent", root), child = agent("child", lane, "parent");
+  const parent = agent("parent", managerCwd), child = agent("child", lane, "parent");
+  const laneWorker = agent("lane-worker", root, "parent");
   const legacy = agent("legacy", lane, "parent"), stranger = agent("stranger", root);
-  for (const value of [parent, child, legacy, stranger]) { ctx.agents.register(value); ctx.sessions.values.set(value.id, value.session); }
+  for (const value of [parent, child, laneWorker, legacy, stranger]) { ctx.agents.register(value); ctx.sessions.values.set(value.id, value.session); }
 
   const plugin = await ctx.plugin({ apply, inject }, { stateDir, workflowSkillDir: "/skills/codex-workflow" });
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -87,7 +95,7 @@ async function host(t) {
 
   let call = 0;
   const run = (name, args, who) => tools.execute({ signal: new AbortController().signal, callId: `call-${++call}`, name, arguments: args, agent: who });
-  return { root, lane, generation, source, stateDir, ctx, tools, run, executions, handlers, binds, plugin, parent, child, legacy, stranger };
+  return { root, lane, generation, source, stateDir, ctx, tools, run, executions, handlers, binds, plugin, parent, child, laneWorker, legacy, stranger };
 }
 
 test("a denied file write never reaches the tool body and an allowed one does", async t => {
@@ -139,6 +147,38 @@ test("the manager may write its own generation summary and nothing else", async 
   // A tool this gate does not name is left to the rest of the pipeline.
   const unknown = await h.run("sentinel", {}, h.parent);
   assert.equal(unknown.isError, false, unknown.content[0].text);
+});
+
+test("the manager's generation summary is writable from wherever the Session was launched", async t => {
+  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "workflow-manager-cwd-")));
+  t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+  const h = await host(t, { managerCwd: elsewhere });
+  // The manager adopted the generation while running elsewhere; the grant on its
+  // summary decides, and the summary is granted.
+  const summary = await h.run("write", { file_path: join(h.generation, "summary.md"), content: "# summary" }, h.parent);
+  assert.equal(summary.isError, false, summary.content[0].text);
+  const other = await h.run("write", { file_path: join(h.generation, "plan.md"), content: "x" }, h.parent);
+  assert.equal(other.isError, true);
+  assert.match(other.content[0].text, /workflow gate: write outside assigned paths/);
+});
+
+test("a native lane worker is checked by its assigned paths, not by which directory it reports", async t => {
+  const h = await host(t);
+  // Its Session reports the repository; its assignment lives in the lane. The
+  // authorized absolute path is authorized from there, through the real guard.
+  const allowed = await h.run("write", { file_path: join(h.source, "a.ts"), content: "x" }, h.laneWorker);
+  assert.equal(allowed.isError, false, allowed.content[0].text);
+  assert.equal(h.executions.write, 1);
+  // A relative path resolves against the directory the child really reports, so
+  // it lands in the repository and is refused — the child uses the absolute
+  // paths its contract carries, as the dispatch prompt already gives it.
+  const relative = await h.run("edit", { file_path: "src/b.ts" }, h.laneWorker);
+  assert.equal(relative.isError, true);
+  assert.match(relative.content[0].text, /workflow gate: write outside assigned paths/);
+  // The scope is unchanged: a neighbour in the same lane is still refused.
+  const neighbour = await h.run("write", { file_path: join(h.source, "b.ts"), content: "x" }, h.laneWorker);
+  assert.equal(neighbour.isError, true);
+  assert.equal(h.executions.write, 1);
 });
 
 test("a Session with no binding, and a legacy record, keep their previous behaviour", async t => {

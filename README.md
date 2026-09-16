@@ -59,48 +59,9 @@ Deliberately **not** covered, and not claimed: file effects inside a shell progr
 
 A denial always starts with `workflow gate: `, so it is machine-recognizable in a session log. A Session with no binding — an ordinary delegation, a legacy record written before the gate existed — is untouched.
 
-One boundary is worth stating because it is easy to misread as a gate bug. A file write first compares the operation's cwd with the cwd the binding recorded, and refuses on a mismatch rather than rewriting it — that check runs before any path is resolved, so it refuses the whole call, not just some of its paths. For a Codex child the recorded cwd is the thread's execution cwd, which is the lane. For a **DSH-native** child the stock subagent runtime copies the *parent's* workspace into the child Session header, so a native lane worker reports the repository while its binding recorded the lane: every `write`/`edit`/`str_replace_editor` call is refused, whether it names a relative path, a repository-relative path **or the lane's own absolute path**. Reads, shells and tools this gate does not classify are unaffected. The shipped configurations all run the `codex` provider, where the two cwds agree; to run lane tasks on a native provider, either give the task a no-lane workspace (`Lane: no`) or bind the assignment to the workspace the child actually reports.
+A file write is resolved against the directory the operation itself reports, and the resolved path — lexically and after symlink resolution — must fall inside one of the assignment's grants. The assignment does **not** have to be the directory the caller stands in: it states which paths may be written, not where the writer is. So a worker in a lane may write `worktree/lane1/src/test.ts` relative to the repository root, or the same file by its absolute path; both resolve inside the lane's grant. What is refused is a path that resolves outside every grant — including one written as if the lane were the working directory, such as a bare `src/test.ts` from the repository root, which lands in `<repository>/src/test.ts`.
 
-The same equality is why the manager must be launched with the repository as its workspace: the manager binding records `cwd = repository`, and a manager Session running elsewhere is refused even its own generation `summary.md`. Adopt a generation from a Session whose workspace is the repository.
-
-`status` reports `complete` and `pendingDisposition`; `complete` performs the same check and refuses with the outstanding disposition (task, attempt, lane or child, state and the existing next action) instead of guessing. It performs no Git operation: delivery, merge, archive and release stay with their existing actions, and a manager waiting on a running child may still end its turn.
-
-## Execution control and cost
-
-A phase may authorize a worker to end its turn with a control report instead of a final result. Only a `bootstrap` opening phase authorizes `Execution control: handoff`; the Host then creates a successor child of the same task and attempt on the bound def configuration, as a sibling under the same parent Session, and records the source turn, target tier, request id and message id. The stable identity is the assignment, its task/attempt/lane and — inside Codex — its original thread, never the DSH child: the source keeps its history and reports but cannot continue. The continuation is delivered once: repeated observation reuses the recorded handoff, and the handoff turn is never read as a candidate result. A report the phase does not authorize is recorded on the attempt as a fact (`control`), never performed.
-
-`Execution control: consult` is authorized for `adaptive` and for a bootstrap continuation. The Host starts one expert child on the Profile's sup configuration bound only to the consultation prompt, with a read-only boundary over the requesting workspace (writes go to the expert's own artifacts), and records the question, contract revision and evidence against the attempt. The same question is never sent to a second expert. When the expert finishes, its conclusion returns to the requesting worker as a continuation prompt that states the advice is not acceptance; the requesting worker keeps its own configuration, implements the result and verifies it. The expert child is acknowledged with the consultation, so release never leaves one unhandled.
-
-A handoff whose target configuration resolves to another provider does not share the native thread: the Host creates a sibling successor child that owns a fresh DSH session, reads the previous adapter's recorded execution facts — commands with their exit status, changed paths, tool results and searches, each carrying its durable item identity, with long output shortened and pointed at that identity — and carries them in the successor's continuation prompt as already-performed facts. Inside Codex the successor keeps the original thread through the provider's controlled handover. Turns after the switch are read from the successor's own DSH session log, so completion never depends on the previous adapter's thread identity; a failed turn on the new adapter reports failure instead of stalling.
-
-Inside Codex, the thread handover needs the installed provider package's trusted `ctx.codexHandoff` service; across providers, the fact import needs its sourced execution-fact projector. The Host reports `handoffSupport: { supported, threadHandoff, factImport, reason? }` for the installed package set and refuses a handoff with its concrete reason when that set lacks the capability the route needs, recording the refusal on the attempt instead of delivering a continuation that would silently keep the old configuration.
-
-Token accounting is read-only: each native turn's usage reaches the Host through `codexExecution.read`, is stored per `workerId:turnId` so repeated observations never double-count, and is summed per task and per run. The parent agent's own coordinating requests are read from its session log and reported separately as `coordination`. A turn whose provider reported no usage is counted as `unreported` rather than as a zero-cost call, and an attempt's declared `Outcome` is preserved verbatim (`blocked`, `needs-decision` and `needs-verification` never collapse into one anonymous state). The summary states that no billing feed is configured, so money is never derived from token counts; a cost dashboard stays out of scope for this round.
-
-`defaultProfile` is the deployment fallback for the stored default: the settings page's `defaultConfig` wins, and an unset stored default falls back to this entry config. The effective default initializes each native parent Session's selection once. An unset default leaves the selection empty. Switching configurations affects future children; existing children keep their recorded provider, model, effort, instructions and execution limits, a handoff successor is created from the bound Profile snapshot, and a cold Agent resume uses the recorded configuration. A deleted selected configuration stays selected and blocks new creation until a valid selection is made.
-
-The Host registers `codex_workflow` for adopted task contracts and uses native child creation, prompt queue/steer and interruption. It reads execution facts through `codexExecution.read`; a native completed turn remains pending workflow acceptance. Unknown execution never authorizes takeover or redispatch. Workflow unload removes its tool and profile RPC; it does not close Codex execution or delete Session history.
-
-## Contract reading: what is relaxed and what is not
-
-The DSH path does not ask an author, or an agent, to run `workflowctl.py validate` or
-`result-check` before adopting. `adopt` reads the directory and validates the machine
-fields any consumer has to be able to read; the Host then checks identity, live
-ownership, capacity, diff, review, delivery and release itself. `scripts/workflowctl.py`
-remains the reader for those machine fields, and Python 3 remains a dependency.
-
-What the reader no longer requires is authoring ceremony rather than identity: a fixed
-set of Markdown prose headings on the plan or the contract, a particular result file
-name, an explicit read scope for a no-lane task, non-empty `Inputs`, or unique spellings
-inside an array or an ownership list. What it still refuses is anything a consumer could
-misread: missing or mistyped machine fields, a non-array where an array is required, an
-unsafe exact-path violation, an unknown/retired/cyclic dependency, a contract/index
-revision mismatch, and a result that does not bind its own task, revision, attempt,
-input or candidate.
-
-The external native skill keeps its own full heading set and its own rules. DSH's
-override applies to the DSH path only: do not generalize this relaxation to native runs,
-and do not edit the native skill to match.
+That last case is the one place where a **DSH-native** child differs from a Codex child. DSH has no way to place a child in another directory: the stock subagent runtime copies the parent's workspace into the child Session header, so a native child's tools resolve relative paths against the repository. A Codex child's thread is started in the assigned directory, so relative paths there resolve into the lane. The dispatch prompt still names the assigned directory as the task's cwd, which is accurate for Codex and misleading for a native child; a native child should be told to write its assigned files by the absolute paths or by paths relative to the repository root. Note also that a missing Session workspace refuses the file write rather than falling back to the server's launch directory.
 
 ## Build and validation
 

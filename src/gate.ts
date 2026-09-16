@@ -43,7 +43,12 @@ export interface PathGrant {
  * never resolves anything against the DSH process's own working directory.
  */
 export interface WorkflowGateArgs {
-  /** Trusted operation cwd; a mismatching event cwd is refused. */
+  /**
+   * The directory the assignment was created in, recorded so a refusal can name
+   * the scope the caller expected. Authorization never compares it: which paths
+   * may be written is the grants' business, and the operation's own reported
+   * directory is what resolves a relative path.
+   */
   cwd: string;
   /** The attempt's lane, when the assignment owns one. */
   lane?: string;
@@ -346,12 +351,15 @@ export function workflowGateHandler(binding: Readonly<GateBinding>, event: Reado
   const targets = writeTargets(event.toolName, event.toolArgs);
   if ("read" in targets) return ALLOW;
   if ("error" in targets) return deny(targets.error);
-  // A file write whose cwd cannot be trusted is refused rather than resolved
-  // against the server's own launch directory. A cwd the assignment does not
-  // own is refused too: the rule never silently rewrites where a write lands.
+  // The operation's own directory is what resolves a relative path; without one
+  // there is nothing to resolve against, so the write is refused rather than
+  // guessed from the server's launch directory. It is not required to equal the
+  // assignment's directory: an assignment states which paths may be written, not
+  // where the caller happens to stand, and an authorized absolute path is
+  // authorized from anywhere. Whatever the resolved path does not fall inside is
+  // refused below, which is the check that actually constrains the write.
   if (typeof event.cwd !== "string" || event.cwd === "") return deny("session has no working directory");
   const cwd = resolve(event.cwd);
-  if (cwd !== args.cwd) return deny(`operation cwd ${cwd} is not the assigned cwd ${args.cwd}`);
   // The manager owns no product files; product grants are additionally confined
   // to the lane, while auxiliary and shared grants may sit outside it — but only
   // their own grant authorizes them.
