@@ -191,6 +191,20 @@ test("a file write without a usable cwd is refused rather than guessed", t => {
   assert.equal(allowed(binding, "bash", { command: "true" }, ""), true);
 });
 
+test("a refusal names the assigned scope so a wrong turn can be corrected", t => {
+  const f = fixture(t);
+  const binding = coding(f);
+  const reason = denial(binding, "write", { file_path: "src/test.ts" }, f.root);
+  assert.match(reason, /write outside assigned paths:/, "it names what was refused");
+  assert.match(reason, /; assigned: /, "and what was assigned instead");
+  assert.ok(reason.includes(join(f.lane, "src", "a.ts")), "the granted product file is listed");
+  assert.ok(reason.includes(f.artifacts), "the granted artifacts path is listed");
+  assert.ok(reason.endsWith("/") === false || reason.includes(`${f.artifacts}/`), "a directory grant is marked as one");
+  // An assignment that granted nothing says exactly that.
+  const empty = gateBinding("manager", buildGateArgs({ cwd: f.root, productWrites: [] }));
+  assert.match(denial(empty, "write", { file_path: join(f.outside, "secret.ts") }, f.root), /authorized no write path/);
+});
+
 test("an assignment authorizes paths, not the directory the caller reports", t => {
   const f = fixture(t);
   const binding = coding(f);

@@ -28,6 +28,7 @@ test("managed no-lane attempt enforces result, acceptance, delivery, and release
   await action({ action: "adopt", generation }); await action({ action: "dispatch", task: "T001" });
   let summary = await action({ action: "status" }), attempt = summary.tasks[0];
   assert.match(f.promptText(f.calls[0]), /- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: [0-9a-f]+\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>/);
+  assert.match(f.promptText(f.calls[0]), /Task and command cwd /, "a Codex thread really starts in the assigned directory");
   await assert.rejects(f.run(() => workers.append("parent", attempt.workerId, "unauthorized")), /requires codex_workflow/);
   await finish(attempt.workerId, attempt.turnId, `- Task: T001\n- Contract revision: 1\n- Attempt: 1\n- Input snapshot: ${base}\n- Candidate snapshot: ${base}\n- Outcome: complete\n`);
   await action({ action: "record-result", task: "T001" });
@@ -217,6 +218,37 @@ test("complete refuses outstanding disposition and accepts delivered, released e
   summary = await action({ action: "status" });
   assert.equal(summary.complete, false, "discarded evidence never satisfies completion");
   assert.equal(summary.pendingDisposition.some(entry => entry.task === "T001"), true);
+});
+
+/**
+ * A child's tools resolve a relative path against the directory that child
+ * actually runs in. A Codex thread is started in the assignment; a DSH-native
+ * child keeps its parent's workspace, so the prompt must not claim otherwise.
+ */
+test("a native child is told the workspace its own tools resolve against", async t => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-native-cwd-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo"); mkdirSync(repo); git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "a.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"), generation = join(repo, "agentwork", "fixture", "generation-1"); mkdirSync(join(generation, "tasks"), { recursive: true });
+  writeFileSync(join(generation, "plan.md"), `- Schema: 1\n- Revision: 1\n- Repository: ${repo}\n- Target: refs/heads/main\n- Base: ${base}\n- Delivery: target-merge\n## Goal\nFixture\n## Acceptance\nFinish.\n## Lane policy\n- Initial lanes: 1\n- Max lanes: 1\n- Expand: no\n- Bases: ["plan", "target"]\n- Isolation: worktree\n- Merge method: merge\n`);
+  writeFileSync(join(generation, "tasks.md"), "## T001\n- State: executable\n- Revision: 1\n");
+  writeFileSync(join(generation, "tasks", "T001.md"), `- Revision: 1\n- Kind: implementation\n- Role: coding_worker\n- Depends on: []\n- Owned paths: ["a.txt"]\n- Resources: []\n- Inputs: ["${base}"]\n- Review: manager\n## Goal\nChange file.\n## Acceptance\nChanged.\n## Constraints\nOwn a.txt.\n## Validation\nRead it.\n## Return when\nDone.\n`);
+  const native = { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" };
+  const roles = { ...Object.fromEntries(ROLES.map(role => [role.name, { provider: role.provider, model: role.model, reasoningEffort: role.effort }])),
+    def_coding_worker: native, sup_coding_worker: native };
+  const f = fixture(t, { cwd: repo, roles });
+  const workflow = new Workflow(f.workers, "/skills/codex-workflow");
+  const action = input => f.run(() => workflow.execute("parent", input));
+  await action({ action: "adopt", generation });
+  await action({ action: "dispatch", task: "T001" });
+  const summary = await action({ action: "status" });
+  const attempt = summary.tasks[0], lane = summary.lanes.find(item => item.name === attempt.lane);
+  const prompt = f.promptText(f.calls.find(call => call.id === attempt.workerId));
+  assert.match(prompt, /this Session's workspace is /, "a native child is told where its own tools resolve relative paths");
+  assert.ok(prompt.includes(repo), "the workspace it names is the one the child really reports");
+  assert.ok(prompt.includes(lane.path), "and the assigned directory is still stated");
+  assert.match(prompt, /write the assigned files by their absolute paths or relative to that workspace/);
+  assert.equal(f.facts.get(attempt.workerId).cwd, lane.path, "the execution itself still runs in the assigned lane");
 });
 
 /**

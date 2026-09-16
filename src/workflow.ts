@@ -9,7 +9,7 @@ import type { WorkflowWorkers } from './workers.js'
 import type { Capture, Report, WorkerProjection } from './workers.js'
 import { ROLES, CONFIG_KEYS, CODING_WORKER } from './roles.js'
 import { buildGateArgs, gateBinding, MANAGER_ROLE, ownsProductWrites } from './gate.js'
-import { CODING_CONFIG_KEY } from './constants.js'
+import { CODEX_PROVIDER, CODING_CONFIG_KEY } from './constants.js'
 import { bindIntegrateStrategy, snapshotProfile, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type Tier } from './strategy.js'
 import { parseControlSignal, type ConsultSignal } from './control.js'
 import type { HandoffRecord, ReportUsage } from './workers.js'
@@ -989,7 +989,15 @@ export class Workflow {
     const worker=randomUUID(), initialStartKey=`workflow:${run.id}:${task.id}:A${number}:initial`
     const contract=join(directory,'contract.md')
     const bound=role.strategy===undefined?'':`\nBound execution strategy: ${role.strategy.effective} (requested ${role.strategy.requested}); phase ${role.strategy.phase}; model configuration tier ${role.strategy.tier}. The Host decides any tier handoff or expert consultation; do not switch models, create a successor or infer switching authority from this line.`
-    const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. Task and command cwd ${cwd}. Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'}${bound} Return the complete result as Markdown in your final response beginning with exactly these execution-result fields, one per line:\n- Task: ${task.id}\n- Contract revision: ${task.revision}\n- Attempt: ${number}\n- Input snapshot: ${base}\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>\nInclude verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
+    // Where the child actually runs decides how a relative path is read. A Codex
+    // thread is started in the assigned directory; a DSH-native child keeps its
+    // parent's workspace, so the assignment is stated separately from it and the
+    // prompt never claims a working directory the child does not have.
+    const workspace=this.workers.parentCwd(run.parent)
+    const where=role.execution.provider===CODEX_PROVIDER||workspace===cwd
+      ? `Task and command cwd ${cwd}.`
+      : `Task cwd ${cwd}; this Session's workspace is ${workspace}, so write the assigned files by their absolute paths or relative to that workspace.`
+    const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. ${where} Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'}${bound} Return the complete result as Markdown in your final response beginning with exactly these execution-result fields, one per line:\n- Task: ${task.id}\n- Contract revision: ${task.revision}\n- Attempt: ${number}\n- Input snapshot: ${base}\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>\nInclude verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
     const a:Attempt={task:structuredClone(task),number,worker,initialPrompt,initialStartKey,lane:lane?.name,allocation,base,contract,directory,state:'reserved',
       ...(role.strategy===undefined?{}:{strategy:role.strategy.requested,effectiveStrategy:role.strategy.effective,tier:role.strategy.tier,phase:role.strategy.phase}),
       ...(role.coding===undefined?{}:{coding:structuredClone(role.coding)}),...(role.profile?{profile:role.profile}:{})}

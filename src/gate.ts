@@ -325,9 +325,27 @@ function authorizePath(target: string, cwd: string, grants: readonly PathGrant[]
   const lexical = resolve(cwd, target);
   const resolved = resolvedTarget(lexical);
   const lexicalGrants = grants.filter(grant => within(grant, lexical));
-  if (lexicalGrants.length === 0) return { reason: `write outside assigned paths: ${lexical}` };
-  if (!lexicalGrants.some(grant => within(grant, resolved))) return { reason: `write resolves outside assigned paths: ${resolved}` };
+  if (lexicalGrants.length === 0) return { reason: `write outside assigned paths: ${lexical}${assignedScope(grants)}` };
+  if (!lexicalGrants.some(grant => within(grant, resolved))) return { reason: `write resolves outside assigned paths: ${resolved}${assignedScope(grants)}` };
   return { path: lexical };
+}
+
+/**
+ * The scope a refusal is judged against, appended to the denial.
+ *
+ * A refusal that only says "no" leaves the caller guessing, and a worker that
+ * resolved a relative path against the wrong directory cannot tell which
+ * directory was expected. Naming the assigned paths turns the denial into the
+ * correction. A directory grant is marked with a trailing separator so the two
+ * kinds are not confused.
+ * @param grants - the grants this target was checked against.
+ * @returns the clause appended to the denial, or the fact that nothing was assigned.
+ */
+function assignedScope(grants: readonly PathGrant[]): string {
+  if (grants.length === 0) return "; this assignment authorized no write path";
+  const shown = grants.slice(0, 8).map(grant => `${grant.path}${grant.kind === "directory" ? "/" : ""}`);
+  const rest = grants.length - shown.length;
+  return `; assigned: ${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
 }
 
 /**
