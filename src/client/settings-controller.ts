@@ -9,7 +9,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { SettingsPathOpView } from "@deepseek-ai/dsh-api-remotes/client";
-import type { SettingsScope } from "@deepseek-ai/dsh-client-ui-settings/client";
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type { ConfigView, WorkflowSettingsSection } from "../profile-types.js";
 import { DEFAULT_CODING_STRATEGY, DEFAULT_INTEGRATE_STRATEGY, type CodingStrategy } from "../constants.js";
 import { loadModelOptions, type ModelGroup } from "./model-catalog.js";
@@ -71,12 +71,12 @@ export class WorkflowSettingsController {
 
   /**
    * @param ctx - client context carrying the remote namespace.
-   * @param scope - this namespace's writable settings scope.
+   * @param scope - this entry's configuration form.
    * @param rpc - the plugin's own channel, which owns the merged read.
    */
   constructor(
     private readonly ctx: Context,
-    private readonly scope: SettingsScope<WorkflowSettingsSection>,
+    private readonly scope: ConfigForm<WorkflowSettingsSection>,
     private readonly rpc: WorkflowRpc,
   ) {
     this.state = this.store.getSnapshot();
@@ -192,7 +192,9 @@ export class WorkflowSettingsController {
   private async mutate(ops: readonly SettingsPathOpView[]): Promise<void> {
     this.publish({ saving: true, error: null });
     try {
-      await this.scope.mutate(ops);
+      // The form answers false for a refused or skipped write and rejects only
+      // for a transport failure; both must reach the page as one error.
+      if (!await this.scope.mutate(ops)) throw new Error("the Host refused the configuration write");
     } catch (error) {
       this.publish({ saving: false, error: messageOf(error) });
       throw error;

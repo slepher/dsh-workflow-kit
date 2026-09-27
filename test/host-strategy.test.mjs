@@ -7,16 +7,13 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import AgentRegistry from "@deepseek-ai/dsh-agent";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
-import { apply, inject } from "../lib/index.js";
+import { apply, Config, inject } from "../lib/index.js";
 
-/** Settings stub: one stored section, exposed through the namespace registry. */
+/** Settings stub: the page policy the plugin registers for its own entry. */
 class Settings extends Service {
-  registered = undefined;
-  constructor(scope, stored) { super(scope, "settings"); this.stored = stored; }
-  register(namespace, schema, options) {
-    this.registered = { namespace, schema, options };
-    return { get: () => this.stored, watch: () => () => {} };
-  }
+  configured = undefined;
+  constructor(scope) { super(scope, "settings"); }
+  configure(presentation, owner) { this.configured = { presentation, owner }; return () => {}; }
 }
 
 /** Minimal carriers the Host plugin registers against. */
@@ -42,7 +39,7 @@ class WebServer extends Service {
   register(route) { this.route = route; return () => { this.route = undefined; }; }
 }
 
-/** Mount the real Host plugin over one stored settings section. */
+/** Mount the real Host plugin over one stored configuration section. */
 async function host(t, stored) {
   const root = mkdtempSync(join(tmpdir(), "workflow-host-strategy-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -50,8 +47,12 @@ async function host(t, stored) {
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
   await ctx.plugin(CodexExecution); await ctx.plugin(CodexToolGate); await ctx.plugin(Subagents); await ctx.plugin(Sessions);
   await ctx.plugin(Connection); await ctx.plugin(WebServer);
-  await ctx.plugin({ apply: scope => { new Settings(scope, stored); }, inject: [] });
-  await ctx.plugin({ apply, inject }, { stateDir: join(root, "state"), workflowSkillDir: "/skills/codex-workflow", defaultProfile: "gpt-workflow" });
+  await ctx.plugin({ apply: scope => { new Settings(scope); }, inject: [] });
+  // The Loader hands the plugin a config resolved from its own `Config` schema;
+  // building it here is what turns the stored fields into volatile references.
+  await ctx.plugin({ apply, inject }, new Config({
+    ...stored, stateDir: join(root, "state"), workflowSkillDir: "/skills/codex-workflow", defaultProfile: "gpt-workflow",
+  }));
   await new Promise(resolve => setTimeout(resolve, 0));
   const session = { id: "parent", header: { id: "parent", cwd: "/work" } };
   ctx.sessions.values.set("parent", session);

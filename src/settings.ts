@@ -18,19 +18,29 @@ export const SETTINGS_EFFORTS = ["none", "minimal", "low", "medium", "high", "xh
 export type WorkflowSettings = WorkflowSettingsSection;
 
 /**
- * Schema resolving the `dsh-workflow-kit` namespace. Schemastery widens every
- * dict member to optional in its inferred type, so the schema is asserted to
- * the section type it resolves at runtime.
+ * Every live-editable field of the plugin's `Config`, as one field map.
+ *
+ * `.volatile()` is what lets the configuration form edit a field without
+ * remounting the plugin: the parsed value becomes a stable reference whose
+ * current snapshot the consumers read at use time. `host.ts` owns the rest of
+ * `Config` and spreads this map into it, so the fields are declared once.
  */
-export const WorkflowSettingsSchema = z.object({
-  defaultConfig: z.string().default(""),
-  codingStrategy: z.union([...STRATEGIES]).default(DEFAULT_CODING_STRATEGY),
-  integrateStrategy: z.union([...STRATEGIES]).default(DEFAULT_INTEGRATE_STRATEGY),
+export const WorkflowConfigFields = {
+  defaultConfig: z.string().default("").volatile(),
+  codingStrategy: z.union([...STRATEGIES]).default(DEFAULT_CODING_STRATEGY).volatile(),
+  integrateStrategy: z.union([...STRATEGIES]).default(DEFAULT_INTEGRATE_STRATEGY).volatile(),
   configs: z.dict(z.object({
     roles: z.dict(z.object({
       provider: z.string(),
       model: z.string(),
       reasoningEffort: z.union([...SETTINGS_EFFORTS]),
     })),
-  })).default({}),
-}) as unknown as z<WorkflowSettings>;
+  })).default({}).volatile(),
+};
+
+/**
+ * The same fields as one standalone schema. Schemastery widens every dict
+ * member to optional in its inferred type, so the schema is asserted to the
+ * section type it resolves at runtime.
+ */
+export const WorkflowSettingsSchema = z.object(WorkflowConfigFields) as unknown as z<WorkflowSettings>;

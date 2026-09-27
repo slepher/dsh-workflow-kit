@@ -8,7 +8,7 @@
  * on the composer's model.
  */
 import { useState, type ReactNode } from "react";
-import { Button, IconChevronDownOutline14, Input, Menu, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconChevronDownOutlineRegular, Input, Menu, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { MenuEntry } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
@@ -164,7 +164,7 @@ export function WorkflowSettingsSection({
             >
               <span className="wf-trigger-label">{selected.id}</span>
               <ConfigBadges config={selected} isDefault={state.defaultConfig === selected.id} t={t} />
-              <IconChevronDownOutline14 size={14} />
+              <IconChevronDownOutlineRegular size={14} />
             </button>}
             onSelect={id => { setOpen(false); setChosen(id); }}
           />
@@ -262,7 +262,7 @@ function StrategyRow({ label, hint, value, editable, onChange, t }: {
         onClick={() => { setOpen(current => !current); }}
       >
         <span className="wf-trigger-label">{t(STRATEGY_LABEL[value])}</span>
-        <IconChevronDownOutline14 size={14} />
+        <IconChevronDownOutlineRegular size={14} />
       </button>}
       onSelect={id => { setOpen(false); onChange(id as CodingStrategy); }}
     />

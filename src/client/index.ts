@@ -5,7 +5,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
-// Type-only: the ctx.settingsScope merge and the scope contract.
+// Type-only: the ctx.configForms merge and the form contract it hands out.
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 // Type-only: pulls the ctx.remote Context merge into this program.
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
@@ -24,11 +24,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
 }
 
 /**
- * Services this browser half reads: slots, the session carrier, copy, settings,
- * and the wire. `remote.session` is a separate injection from `remote` — the
- * settings page reads the adapter model catalog through that namespace.
+ * Services this browser half reads: slots, the session carrier, copy, the
+ * settings transport, and the wire. `remote.session` is a separate injection
+ * from `remote` — the settings page reads the adapter model catalog through
+ * that namespace.
  */
-export const inject = ["slots", "connection", "locale", "settingsScope", "remote", "remote.session"];
+export const inject = ["slots", "connection", "locale", "configForms", "remote", "remote.session"];
 
 /** Register the composer picker and the Workflow settings page. */
 export function apply(ctx: Context): void {
@@ -51,7 +52,8 @@ export function apply(ctx: Context): void {
     inject: (): ConfigPickerInjected => ({ request }),
   }, ConfigPicker));
 
-  const scope = ctx.settingsScope.bind<WorkflowSettingsData>({ namespace: WORKFLOW_SETTINGS_NAMESPACE });
+  // The form is keyed by the Host's profile entry id, which is this plugin's id.
+  const scope = ctx.configForms.get<WorkflowSettingsData>(WORKFLOW_SETTINGS_NAMESPACE);
   const controller = new WorkflowSettingsController(ctx, scope, rpc);
   ctx.effect(() => () => { controller.dispose(); }, "dsh-workflow-kit: settings controller");
   // Ordered last: a deployment-shaping page belongs after the routine ones.

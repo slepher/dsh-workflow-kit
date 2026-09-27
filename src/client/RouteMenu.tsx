@@ -2,14 +2,16 @@
  * One role's route selector: a two-level menu (`模型` / `推理等级`) whose model
  * pane groups models under their provider heading, the way the composer's own
  * model seat does. The shared `Menu` primitive renders no headings inside a
- * submenu, so this control draws its own card over the same tokens, geometry,
- * and the two positioning/dismissal hooks the primitive exposes.
+ * submenu, so this control draws its own rows and the two positioning/dismissal
+ * hooks the primitive exposes, while the shared `MenuSurface` paints the card:
+ * the translucent menu fill only reads as a surface once the backdrop material
+ * (and, on macOS, the opaque backing) is under it.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  IconCheckOutline14, IconChevronDownOutline14, IconChevronRightOutline14,
-  useAnchoredPosition, useDismissOnOutsidePointer,
+  IconCheckOutlineRegular, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular,
+  MenuSurface, useAnchoredPosition, useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ModelGroup } from "./model-catalog.js";
 import { effortForModelChange, effortLabel } from "./effort.js";
@@ -89,10 +91,10 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
     >
       <span className="wf-trigger-label">{modelLabel}</span>
       <span className="wf-trigger-value">{shownEffort}</span>
-      <IconChevronDownOutline14 size={14} />
+      <IconChevronDownOutlineRegular size={14} />
     </button>
     {open && createPortal(
-      <div
+      <MenuSurface
         ref={panel}
         className="wf-menu"
         style={position ?? { visibility: "hidden", left: 0, top: 0 }}
@@ -103,12 +105,12 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
           <button type="button" role="menuitem" className="wf-item" onClick={() => { setPane("model"); }}>
             <span className="wf-item-label">{t("columnModel")}</span>
             <span className="wf-item-value">{modelLabel}</span>
-            <IconChevronRightOutline14 size={14} className="wf-item-chevron" />
+            <IconChevronRightOutlineRegular size={14} className="wf-item-chevron" />
           </button>
           <button type="button" role="menuitem" className="wf-item" onClick={() => { setPane("effort"); }}>
             <span className="wf-item-label">{t("columnEffort")}</span>
             <span className="wf-item-value">{shownEffort}</span>
-            <IconChevronRightOutline14 size={14} className="wf-item-chevron" />
+            <IconChevronRightOutlineRegular size={14} className="wf-item-chevron" />
           </button>
         </>}
 
@@ -127,7 +129,7 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
                 onClick={() => { chooseModel(candidate.provider, model.model); }}
               >
                 <span className="wf-item-label">{model.name}</span>
-                {selected && <IconCheckOutline14 size={14} className="wf-item-check" />}
+                {selected && <IconCheckOutlineRegular size={14} className="wf-item-check" />}
               </button>;
             })}
           </section>)}
@@ -145,11 +147,11 @@ export function RouteMenu({ role, value, groups, editable, onChange, t }: RouteM
               onClick={() => { close(); void onChange({ ...value, reasoningEffort: level.id }); }}
             >
               <span className="wf-item-label">{level.name}</span>
-              {selected && <IconCheckOutline14 size={14} className="wf-item-check" />}
+              {selected && <IconCheckOutlineRegular size={14} className="wf-item-check" />}
             </button>;
           })}
         </>}
-      </div>,
+      </MenuSurface>,
       document.body,
     )}
   </>;

@@ -7,7 +7,7 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import AgentRegistry from "@deepseek-ai/dsh-agent";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
-import { apply, inject, WorkflowStore } from "../lib/index.js";
+import { apply, Config, inject, WorkflowStore } from "../lib/index.js";
 
 test("workflow host leaves the ordinary consumer untouched and activates managed status", async t => {
   const root = mkdtempSync(join(tmpdir(), "workflow-safety-host-"));
@@ -51,7 +51,7 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   const agent = { id: "parent", ctx: scope.ctx, session: { id: "parent", header: { cwd: "/work" } }, status: "idle", followup() {} };
   ctx.agents.register(agent); ctx.sessions.values.set("parent", agent.session);
 
-  const plugin = await ctx.plugin({ apply, inject }, { stateDir, workflowSkillDir: "/skills/codex-workflow" });
+  const plugin = await ctx.plugin({ apply, inject }, new Config({ stateDir, workflowSkillDir: "/skills/codex-workflow" }));
   await new Promise(resolve => setTimeout(resolve, 0));
   const ordinary = await tools.execute({ signal: new AbortController().signal, callId: "ordinary", name: "ordinary_sentinel", arguments: {}, agent });
   assert.equal(ordinary.isError, false); assert.equal(ordinary.content[0].text, "ordinary-ok");

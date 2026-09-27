@@ -7,7 +7,7 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import AgentRegistry from "@deepseek-ai/dsh-agent";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
-import { apply, inject, WorkflowStore } from "../lib/index.js";
+import { apply, Config, inject, WorkflowStore } from "../lib/index.js";
 import { buildGateArgs, gateBinding } from "../lib/gate.js";
 
 /**
@@ -89,7 +89,7 @@ async function host(t, options = {}) {
   const legacy = agent("legacy", lane, "parent"), stranger = agent("stranger", root);
   for (const value of [parent, child, laneWorker, legacy, stranger]) { ctx.agents.register(value); ctx.sessions.values.set(value.id, value.session); }
 
-  const plugin = await ctx.plugin({ apply, inject }, { stateDir, workflowSkillDir: "/skills/codex-workflow" });
+  const plugin = await ctx.plugin({ apply, inject }, new Config({ stateDir, workflowSkillDir: "/skills/codex-workflow" }));
   await new Promise(resolve => setTimeout(resolve, 0));
   t.after(() => plugin.dispose());
 

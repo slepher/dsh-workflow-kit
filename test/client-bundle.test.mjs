@@ -22,8 +22,8 @@ const PLATFORM = {
     Button: () => null, Input: () => null, Menu: () => null, Modal: () => null,
     Tooltip: () => null, Pill: () => null,
     useAnchoredPosition: () => null, useDismissOnOutsidePointer: () => {},
-    IconBranchOutline16: () => null, IconChevronDownOutline14: () => null,
-    IconChevronRightOutline14: () => null, IconCheckOutline14: () => null,
+    IconBranchOutlineRegular: () => null, IconChevronDownOutlineRegular: () => null,
+    IconChevronRightOutlineRegular: () => null, IconCheckOutlineRegular: () => null,
   },
 };
 
@@ -78,7 +78,7 @@ function harness() {
   const scope = {
     getSnapshot: () => ({ status: "ready", writable: true, revision: 7, mode: "host", value: undefined, base: undefined, user: undefined }),
     subscribe: () => () => {},
-    mutate: ops => { mutations.push(ops); return Promise.resolve(); },
+    mutate: ops => { mutations.push(ops); return Promise.resolve(true); },
   };
   const ctx = {
     get: name => { assert.equal(name, "connection"); return connection; },
@@ -91,7 +91,7 @@ function harness() {
       register(ns) { assert.equal(ns, "dsh-workflow-kit"); return () => {}; },
       bind: () => key => (key === "nav" ? "工作流" : key),
     },
-    settingsScope: { bind(spec) { assert.equal(spec.namespace, "dsh-workflow-kit"); return scope; } },
+    configForms: { get(entryId) { assert.equal(entryId, "dsh-workflow-kit"); return scope; } },
     remote: { session: { modelCatalog: () => { catalogReads += 1; return Promise.resolve({ ok: true, value: catalogValue }); } } },
     slots: {
       inject(_name, fn) { fn(); return () => {}; },
@@ -107,7 +107,7 @@ test("shipped client registers the composer picker and the Workflow settings pag
   // `remote.session` is a separate injection from `remote`: without it the
   // settings page cannot read the adapter model catalog.
   assert.deepEqual([...plugin.inject].sort(),
-    ["connection", "locale", "remote", "remote.session", "settingsScope", "slots"]);
+    ["configForms", "connection", "locale", "remote", "remote.session", "slots"]);
   plugin.apply(ctx);
   assert.equal(catalogReads(), 1, "the settings page reads the adapter model catalog");
 
@@ -162,7 +162,12 @@ test("shipped client styles use native tokens and paint the settings-nav glyph",
   assert.ok(source.includes('"wf-group-title"'), "provider headings are rendered");
   assert.ok(source.includes('role: "group"'), "each provider group is a labelled section");
   assert.ok(source.includes('"wf-item-check"'), "the selected route carries a check");
-  assert.match(source, /--dsw-specific-menu/);
+  // The card is painted by the shared MenuSurface, whose material completes the
+  // translucent menu fill with the backdrop filter; the pinned heading repeats
+  // that material so rows scrolling under it stay hidden.
+  assert.ok(source.includes("MenuSurface"), "the card is painted by the shared menu surface");
+  assert.match(source, /--dsw-menu-surface-fill/);
+  assert.match(source, /--dsw-menu-backdrop-filter/);
   // The settings schema stores one of the named efforts, so the editor has no
   // "provider default" sentinel to submit: an empty value would be rejected.
   assert.ok(!source.includes('reasoningEffort: ""'), "the effort menu never stores an empty provider default");

@@ -85,12 +85,13 @@ test("integrate resolves from the integrate setting and never from a Session cod
 });
 
 test("the settings schema defaults the two strategies independently", () => {
+  // The volatile fields resolve to references; the value is read from each one.
   const empty = WorkflowSettingsSchema({});
-  assert.equal(empty.codingStrategy, "adaptive");
-  assert.equal(empty.integrateStrategy, "economy");
+  assert.equal(empty.codingStrategy.get(), "adaptive");
+  assert.equal(empty.integrateStrategy.get(), "economy");
   const stored = WorkflowSettingsSchema({ codingStrategy: "expert", integrateStrategy: "bootstrap" });
-  assert.deepEqual([stored.codingStrategy, stored.integrateStrategy], ["expert", "bootstrap"]);
-  assert.equal(WorkflowSettingsSchema({ codingStrategy: "expert" }).integrateStrategy, "economy", "one change never overwrites the other");
+  assert.deepEqual([stored.codingStrategy.get(), stored.integrateStrategy.get()], ["expert", "bootstrap"]);
+  assert.equal(WorkflowSettingsSchema({ codingStrategy: "expert" }).integrateStrategy.get(), "economy", "one change never overwrites the other");
   assert.throws(() => WorkflowSettingsSchema({ codingStrategy: "turbo" }));
 });
 

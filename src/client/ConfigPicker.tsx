@@ -9,7 +9,7 @@
  * fixes independent execution; the stored preference is retained, not erased.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { IconBranchOutline16, IconChevronDownOutline14, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconBranchOutlineRegular, IconChevronDownOutlineRegular, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { MenuEntry } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ProfileAction, ProfileView } from "../profile-types.js";
@@ -110,9 +110,9 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
           setOpen(true);
         }}
       >
-        <IconBranchOutline16 size={14} />
+        <IconBranchOutlineRegular size={14} />
         <span className="wf-trigger-label">{pending && view === null ? t("pickerLoading") : label}</span>
-        <IconChevronDownOutline14 size={14} />
+        <IconChevronDownOutlineRegular size={14} />
       </button>}
       onSelect={id => {
         setOpen(false);
@@ -139,7 +139,7 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
         }}
       >
         <span className="wf-trigger-label">{t(STRATEGY_LABEL[strategy.preference ?? strategy.default])}</span>
-        <IconChevronDownOutline14 size={14} />
+        <IconChevronDownOutlineRegular size={14} />
       </button>}
       onSelect={id => {
         setStrategyOpen(false);

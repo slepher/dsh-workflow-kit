@@ -1,11 +1,14 @@
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Volatile } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import z from "@deepseek-ai/schemastery";
 import type {} from "dsh-codex-app-provider";
 import type {} from "@deepseek-ai/dsh-settings";
+// Type-only: the Loader's `loader/volatile-update` instance event.
+import type {} from "@deepseek-ai/cordis-plugin-loader";
 import { installProfileRpc } from "./profile-rpc.js";
 import { WorkflowConfiguration, loadBuiltinProfiles, roleInstructions } from "./configuration.js";
-import { WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, type WorkflowSettings } from "./settings.js";
+import { WorkflowConfigFields, type WorkflowSettings } from "./settings.js";
 import { WorkflowStore } from "./store.js";
 import { Workflow } from "./workflow.js";
 import { ROLES } from "./roles.js";
@@ -20,7 +23,45 @@ export const name = "dsh-workflow-kit";
  */
 export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution", "codexToolGate"];
 
-export interface Config { stateDir: string; workflowSkillDir?: string; implementationStandardDir?: string; defaultProfile?: string }
+/**
+ * The plugin's entry configuration.
+ *
+ * The profile patch carries the deployment fields (`stateDir`, the two skill
+ * directories, the fallback profile); the plugin's configuration form owns the
+ * four volatile ones. `stateDir` stays plain on purpose: moving the state
+ * directory is a deployment change, and the Loader remounts this plugin for it.
+ */
+export interface Config {
+  /** Where adopted runs, lanes, and child bindings are persisted. */
+  stateDir?: string;
+  /** Directory of the shipped workflow skill, when the deployment installs one. */
+  workflowSkillDir?: string;
+  /** Directory of the shipped implementation standard, when the deployment installs one. */
+  implementationStandardDir?: string;
+  /** Deployment fallback for the configuration a new Session adopts. */
+  defaultProfile?: string;
+  /** Stored selection; empty defers to {@link Config.defaultProfile}. */
+  defaultConfig: Volatile<string>;
+  /** Stored coding default; a Session may override it in the composer. */
+  codingStrategy: Volatile<WorkflowSettings["codingStrategy"]>;
+  /** Stored integrate default; integration work uses it directly. */
+  integrateStrategy: Volatile<WorkflowSettings["integrateStrategy"]>;
+  /** Stored role overrides per configuration. */
+  configs: Volatile<WorkflowSettings["configs"]>;
+}
+
+/**
+ * The schema the Loader resolves this entry's Config with. The four volatile
+ * fields are exactly the ones the plugin's configuration form edits live; the
+ * rest are deployment inputs the patch supplies.
+ */
+export const Config = z.object({
+  stateDir: z.string().required(false),
+  workflowSkillDir: z.string().required(false),
+  implementationStandardDir: z.string().required(false),
+  defaultProfile: z.string().required(false),
+  ...WorkflowConfigFields,
+});
 
 /**
  * The DSH-native half of the session gate.
@@ -57,29 +98,34 @@ function nativeGate(ctx: Context, store: WorkflowStore, workflow: Workflow, exec
 /** Install workflow policy over native DSH children and read-only Codex execution facts. */
 export function apply(ctx: Context, config?: Config): void {
   if (!config?.stateDir) throw new Error("stateDir is required for workflow execution");
-  // Built-in configurations are package content; the settings namespace below
-  // carries the only per-deployment state.
+  const stateDir: string = config.stateDir;
+  const entry: Config = config;
+  // The configuration form is this plugin's own page, so the settings service
+  // must not also generate one from the schema.
+  ctx.inject(["settings"], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)); });
+  // Built-in configurations are package content; the entry config above carries
+  // the only per-deployment state.
   const catalog = new WorkflowConfiguration(
     loadBuiltinProfiles(),
-    roleInstructions(config.workflowSkillDir, config.implementationStandardDir),
+    roleInstructions(entry.workflowSkillDir, entry.implementationStandardDir),
   );
-  const store = new WorkflowStore(config.stateDir);
+  const store = new WorkflowStore(stateDir);
   // The user's stored choice wins; the entry config is the deployment fallback
-  // for a Host whose settings namespace holds no default.
-  let storedDefault = "";
-  const defaultProfile = (): string | undefined => storedDefault || config.defaultProfile;
-  ctx.inject(["settings"], scope => {
-    const settings = scope.settings.register(WORKFLOW_SETTINGS_NAMESPACE, WorkflowSettingsSchema, { applies: "live" });
-    const sync = (value: WorkflowSettings): void => {
-      storedDefault = value.defaultConfig;
-      catalog.setUserConfigs(value.configs);
-      // The two strategy defaults are stored separately and both reach the
-      // catalog here; neither is derived from the other.
-      catalog.setUserStrategies(value);
-    };
-    sync(settings.get());
-    scope.effect(() => settings.watch(next => { sync(next); }), "dsh-workflow-kit: stored configurations and strategies");
-  });
+  // for a profile whose form holds no default.
+  const defaultProfile = (): string | undefined => entry.defaultConfig.get() || entry.defaultProfile;
+  // The stored fields are volatile references, so the catalog is re-fed whenever
+  // one changes: a form edit lands without remounting this plugin.
+  const syncStored = (): void => {
+    catalog.setUserConfigs(entry.configs.get() as WorkflowSettings["configs"]);
+    // The two strategy defaults are stored separately and both reach the
+    // catalog here; neither is derived from the other.
+    catalog.setUserStrategies({
+      codingStrategy: entry.codingStrategy.get(),
+      integrateStrategy: entry.integrateStrategy.get(),
+    });
+  };
+  syncStored();
+  ctx.on("loader/volatile-update", () => { syncStored(); });
   installProfileRpc(ctx, catalog, store, defaultProfile);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
   const workflow = new Workflow(consumer, config.workflowSkillDir);

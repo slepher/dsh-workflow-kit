@@ -7,32 +7,32 @@
     },
     "reviewer": {
       "provider": "codex",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoningEffort": "high"
     },
     "context_collector": {
       "provider": "codex",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "reasoningEffort": "high"
     },
     "def_coding_worker": {
       "provider": "codex",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     },
     "sup_coding_worker": {
       "provider": "codex",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoningEffort": "medium"
     },
     "evidence_runner": {
       "provider": "codex",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     },
     "full_tester": {
       "provider": "codex",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     }
   }

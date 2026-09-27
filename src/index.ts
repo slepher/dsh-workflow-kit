@@ -21,7 +21,10 @@ export type { BoundStrategy, Capture, ControlOutcome, HandoffRecord, NativeChild
 export { handoffPrompt, parseControlSignal } from "./control.js";
 export type { ConsultSignal, ControlSignal, ControlTier, HandoffSignal } from "./control.js";
 export { Workflow, type WorkflowAction } from "./workflow.js";
-export { apply, inject, name, type Config } from "./host.js";
+// `Config` is re-exported as a value: the Loader reads this module's `Config`
+// export as the plugin's schema, and the interface it is merged with types the
+// parsed value `apply` receives.
+export { apply, inject, name, Config } from "./host.js";
 export type * from "./types.js";
 
 export { bindCodingStrategy, bindIntegrateStrategy, sameModel, snapshotProfile, tierConfigKey } from "./strategy.js";

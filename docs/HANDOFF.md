@@ -82,6 +82,6 @@ Build, tests, factory materialization, and pack checks do not establish a real
 browser or model run. The independent runner must verify the joint profile has
 backend → Codex → workflow once, one Host/backend is created, the full worker UI
 and visual Codex panel coexist, and no read-only action starts a model. Any real
-smoke must explicitly use the requested minimal `gpt-5.6-luna` flow. Restart,
+smoke must explicitly use the requested minimal `gpt-6-luna` flow. Restart,
 same-thread continuation, running UI/tool HMR, report/listener deduplication,
 and owned-child cleanup remain runtime evidence tasks.
