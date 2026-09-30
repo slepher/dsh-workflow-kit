@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { join } from "node:path";
+import { Context, Service } from "@deepseek-ai/cordis";
+import { HostConnectionService } from "@deepseek-ai/dsh-client-connection";
 import { installProfileRpc } from "../lib/profile-rpc.js";
 import { fixture } from "./native-fixture.mjs";
-
-const PROFILE_ROOT = "/home/slepher/.dsh/profiles/workflow-kit-dev/node_modules";
-const { Context, Service } = await import(join(PROFILE_ROOT, "@deepseek-ai/cordis/lib/index.js"));
-const { HostConnectionService } = await import(join(PROFILE_ROOT, "@deepseek-ai/dsh-client-connection/lib/index.js"));
 
 // This harness pins a regression a plain object stub cannot see: registering the
 // channel through `connection.rpc.handle` reads the webServer from the Connection
