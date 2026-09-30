@@ -7,7 +7,7 @@
     },
     "reviewer": {
       "provider": "codex",
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "reasoningEffort": "high"
     },
     "context_collector": {
@@ -22,7 +22,7 @@
     },
     "sup_coding_worker": {
       "provider": "codex",
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "reasoningEffort": "medium"
     },
     "evidence_runner": {

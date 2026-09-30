@@ -14,7 +14,7 @@ export const CODING_WORKER = "coding_worker";
 const DEF_CODING = { provider: CODEX_PROVIDER, model: "gpt-6-luna", effort: "medium" as Effort };
 
 /** Model configuration the shipped sup tier falls back to. */
-const SUP_CODING = { provider: CODEX_PROVIDER, model: "gpt-6-sol", effort: "medium" as Effort };
+const SUP_CODING = { provider: CODEX_PROVIDER, model: "gpt-6.1-sol", effort: "medium" as Effort };
 
 /**
  * Execution role catalog: the `Role` a contract may name, and the roles the
@@ -23,7 +23,7 @@ const SUP_CODING = { provider: CODEX_PROVIDER, model: "gpt-6-sol", effort: "medi
  */
 export const ROLES: readonly Role[] = [
   { name: "planner", description: "Planner for progressive generations and executable contracts.", provider: CODEX_PROVIDER, model: "gpt-6-astra", effort: "high", protocol: "planner.md", implementation: false, skills: ["worker-execution", "role-planner", "implementation-simplicity"] },
-  { name: "reviewer", description: "Independent reviewer for contract-bound candidates.", provider: CODEX_PROVIDER, model: "gpt-6-sol", effort: "high", protocol: "reviewer.md", implementation: false, skills: ["worker-execution", "role-reviewer", "implementation-simplicity"] },
+  { name: "reviewer", description: "Independent reviewer for contract-bound candidates.", provider: CODEX_PROVIDER, model: "gpt-6.1-sol", effort: "high", protocol: "reviewer.md", implementation: false, skills: ["worker-execution", "role-reviewer", "implementation-simplicity"] },
   { name: "context_collector", description: "Read-only repository evidence collector.", provider: CODEX_PROVIDER, model: "gpt-6-luna", effort: "high", protocol: "context-collector.md", implementation: false, skills: ["worker-execution", "role-context-collector"] },
   { name: CODING_WORKER, description: "Unified implementation, test and in-scope repair worker.", ...DEF_CODING, protocol: "coding-worker.md", implementation: true, skills: ["worker-execution", "role-coding-worker", "implementation-simplicity"] },
   { name: "evidence_runner", description: "Mechanical evidence runner without source edits.", provider: CODEX_PROVIDER, model: "gpt-6-luna", effort: "medium", protocol: "evidence-runner.md", implementation: false, skills: ["worker-execution", "role-evidence-runner"] },
