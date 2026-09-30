@@ -9,7 +9,11 @@ test("exports the workflow boundary", () => {
   assert.deepEqual(WORKFLOW_OWNED_STATE, ["tasks", "attempts", "lanes", "reviews", "integration", "delivery", "release"]);
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./client"]);
+  // `./package.json` and `./locale/*.json` are display resources: the Plugin
+  // Manager reads a plugin's title and description through them without
+  // evaluating plugin code. They widen no runtime API.
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./client", "./package.json", "./locale/*.json"]);
+  assert.ok(manifest.files.includes("locale/*.json"), "the locale resources ship with the package");
   assert.ok(manifest.files.includes("lib") && manifest.files.includes("profiles") && manifest.files.includes("cordis.patch.yml"));
   assert.equal(manifest.exports["./client"].default, "./lib/client.js");
   assert.equal(manifest.dsh.client.platform, "web");

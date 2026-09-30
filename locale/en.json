@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workflow kit",
+    "description": "Adds the codex_workflow tool: adopted generations executed under lane, review, integration, and acceptance constraints."
+  }
+}

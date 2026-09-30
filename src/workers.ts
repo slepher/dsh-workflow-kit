@@ -492,7 +492,7 @@ export class WorkflowWorkers {
     catch { session = undefined }
     const live = session?.snapshotEvents?.();
     if (live !== undefined) return turnsOf(live, id);
-    const persistence = (this.ctx as unknown as { get?: (name: string) => unknown }).get?.("sessionPersistence") as
+    const persistence = this.ctx.get("sessionPersistence") as
       | { open?(session: unknown, mode: string): Promise<{ read(): Promise<{ events?: readonly unknown[] }>; close(): Promise<void> }> }
       | undefined;
     if (persistence?.open === undefined) return undefined;
@@ -720,7 +720,7 @@ export class WorkflowWorkers {
 
   /** The trusted-Host thread handover service, when the installed provider publishes one. */
   private threadHandoff(): ThreadHandoffService | undefined {
-    return (this.ctx as unknown as { get(name: string): unknown }).get("codexHandoff") as ThreadHandoffService | undefined;
+    return this.ctx.get("codexHandoff") as ThreadHandoffService | undefined;
   }
 
   /**

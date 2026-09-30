@@ -12,10 +12,13 @@
     "./client": {
       "types": "./lib/client/index.d.ts",
       "default": "./lib/client.js"
-    }
+    },
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
+    "locale/*.json",
     "profiles",
     "docs",
     "scripts",

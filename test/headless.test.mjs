@@ -15,7 +15,10 @@ test("Workflow Host stays headless while the same package exposes profile UI", a
   assert.throws(() => assertHeadlessFiles([{ path: "lib/transcript.js" }]), /retired artifact/);
   assert.doesNotThrow(() => assertHeadlessFiles(files.map(path => ({ path: `lib/${path}` }))));
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./client"]);
+  // The Host half stays headless. The extra subpaths serve display metadata:
+  // the Plugin Manager reads a plugin's title and description from its exported
+  // locale resources without evaluating plugin code (app-boot `readPluginMeta`).
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./client", "./package.json", "./locale/*.json"]);
   assert.ok(existsSync(new URL("../lib/client.js", import.meta.url)));
   const executable = readdirSync(new URL("../src/", import.meta.url)).filter(file => file.endsWith(".ts")).map(file => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8")).join("\n");
   assert.doesNotMatch(executable, /react|EventSource|__ModuleLoader__|\/codex-workers|sidebar\.right\.pane\.tab|conversation\.session\.header\.utilities/i);

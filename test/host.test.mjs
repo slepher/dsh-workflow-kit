@@ -85,4 +85,13 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   assert.ok(ctx.get("codexExecution"), "workflow unload retains the independent provider");
   const afterUnload = await tools.execute({ signal: new AbortController().signal, callId: "ordinary-after", name: "ordinary_sentinel", arguments: {}, agent });
   assert.equal(afterUnload.isError, false); assert.equal(afterUnload.content[0].text, "ordinary-ok");
+
+  // A deployment without an explicit stateDir lands in the launched profile's
+  // state tree instead of the directory the process started in.
+  const home = join(root, "profile-home");
+  ctx.provide("profileContext", { name: "probe-profile", home });
+  const defaulted = await ctx.plugin({ apply, inject }, new Config({}));
+  assert.equal(existsSync(join(home, "state", "probe-profile", "workflow")), true,
+    "the default state directory is the profile's own");
+  await defaulted.dispose();
 });

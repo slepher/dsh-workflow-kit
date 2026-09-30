@@ -218,7 +218,9 @@ const CSS = `
 .wf-tab-active {
   background: var(--dsw-alias-bg-module-platform);
   color: var(--dsw-alias-label-primary);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  /* The selected segment is a raised surface, so it takes the theme elevation
+     token rather than a literal shadow (docs/web-styling.md, elevated surfaces). */
+  box-shadow: var(--dsw-elevation-soft);
 }
 .wf-catalog-error {
   padding: 8px 4px;

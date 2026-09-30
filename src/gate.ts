@@ -405,7 +405,7 @@ export function workflowGateHandler(binding: Readonly<GateBinding>, event: Reado
  * @returns the capability, or `undefined` when the installed provider has none.
  */
 export function installedCodexToolGate(ctx: Context): CodexToolGate | undefined {
-  const value = (ctx as unknown as { get?(name: string): unknown }).get?.("codexToolGate");
+  const value = ctx.get("codexToolGate");
   if (typeof value !== "object" || value === null) return undefined;
   const gate = value as Partial<CodexToolGate>;
   return typeof gate.register === "function" && typeof gate.bind === "function" ? gate as CodexToolGate : undefined;

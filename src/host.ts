@@ -1,4 +1,6 @@
 import type { Context, Volatile } from "@deepseek-ai/cordis";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
@@ -32,7 +34,10 @@ export const inject = ["tools", "agents", "sessions", "subagents", "codexExecuti
  * directory is a deployment change, and the Loader remounts this plugin for it.
  */
 export interface Config {
-  /** Where adopted runs, lanes, and child bindings are persisted. */
+  /**
+   * Where adopted runs, lanes, and child bindings are persisted. Omitted means
+   * the launched profile's own state directory.
+   */
   stateDir?: string;
   /** Directory of the shipped workflow skill, when the deployment installs one. */
   workflowSkillDir?: string;
@@ -56,12 +61,33 @@ export interface Config {
  * rest are deployment inputs the patch supplies.
  */
 export const Config = z.object({
+  // Omittable: `apply` derives the launched profile's own state directory, so a
+  // profile needs no line here to run.
   stateDir: z.string().required(false),
   workflowSkillDir: z.string().required(false),
   implementationStandardDir: z.string().required(false),
   defaultProfile: z.string().required(false),
   ...WorkflowConfigFields,
 });
+
+/**
+ * Persistence root used when the entry config omits `stateDir`.
+ *
+ * The launcher-provided profile owns the Harness home and its own name, so the
+ * fallback lands inside that profile's state tree. Resolving against the
+ * current working directory instead would scatter state into whichever
+ * directory `dsh` was started from, and two profiles started from one directory
+ * would share it. A boot without a profile falls back to `$DSH_HOME`, then
+ * `~/.dsh`, under the `default` profile name.
+ * @param ctx - the Host context carrying the launcher-provided profile context.
+ * @returns the absolute state directory for this deployment.
+ */
+function defaultStateDir(ctx: Context): string {
+  const profile = ctx.get("profileContext") as { name?: string; home?: string } | undefined;
+  const configuredHome = process.env.DSH_HOME?.trim();
+  const home = profile?.home ?? (configuredHome === undefined || configuredHome === "" ? join(homedir(), ".dsh") : configuredHome);
+  return join(home, "state", profile?.name ?? "default", "workflow");
+}
 
 /**
  * The DSH-native half of the session gate.
@@ -97,9 +123,13 @@ function nativeGate(ctx: Context, store: WorkflowStore, workflow: Workflow, exec
 
 /** Install workflow policy over native DSH children and read-only Codex execution facts. */
 export function apply(ctx: Context, config?: Config): void {
-  if (!config?.stateDir) throw new Error("stateDir is required for workflow execution");
-  const stateDir: string = config.stateDir;
-  const entry: Config = config;
+  // The Loader parses every entry through `Config`, which fills the four
+  // volatile fields from their defaults; a direct mount with no config is
+  // normalized the same way instead of failing on the first stored read.
+  const entry: Config = config ?? new Config({});
+  // Deployment state belongs to the profile that launched this process; an
+  // explicit `stateDir` in the profile patch still wins.
+  const stateDir = resolve(entry.stateDir ?? defaultStateDir(ctx));
   // The configuration form is this plugin's own page, so the settings service
   // must not also generate one from the schema.
   ctx.inject(["settings"], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)); });
@@ -127,8 +157,8 @@ export function apply(ctx: Context, config?: Config): void {
   syncStored();
   ctx.on("loader/volatile-update", () => { syncStored(); });
   installProfileRpc(ctx, catalog, store, defaultProfile);
-  const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, config.workflowSkillDir, config.implementationStandardDir);
-  const workflow = new Workflow(consumer, config.workflowSkillDir);
+  const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, entry.workflowSkillDir, entry.implementationStandardDir);
+  const workflow = new Workflow(consumer, entry.workflowSkillDir);
   // The gate is installed before any session can be started: the one business
   // handler is registered with the provider first, then the DSH-native guard.
   // Both entry points call the same function, and neither calls a model.
