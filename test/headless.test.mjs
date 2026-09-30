@@ -36,14 +36,18 @@ test("clean W pack source ignores an active checkout lib and requires source", t
   const fixture = mkdtempSync(join(tmpdir(), "workflow-clean-source-")), build = join(fixture, "build");
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
   for (const file of ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.client.json", "README.md", "cordis.patch.yml"]) writeFileSync(join(fixture, file), "{}");
-  for (const directory of ["src", "scripts", "docs", "profiles", "lib"]) mkdirSync(join(fixture, directory));
+  for (const directory of ["src", "scripts", "docs", "profiles", "lib", "locale"]) mkdirSync(join(fixture, directory));
   writeFileSync(join(fixture, "src/index.ts"), "export {};");
   writeFileSync(join(fixture, "profiles/gpt-workflow.json"), "{}");
+  writeFileSync(join(fixture, "locale/zh.json"), "{}");
   writeFileSync(join(fixture, "lib/index.js"), "CHECKOUT-STALE");
   copyWorkflowSource(fixture, build);
   assert.equal(existsSync(join(build, "src/index.ts")), true);
   // Shipped configurations travel with the source, never with a stale checkout lib.
   assert.equal(existsSync(join(build, "profiles/gpt-workflow.json")), true);
+  // The exported locale resources travel too: without them the packed tarball
+  // cannot answer the Plugin Manager's title and description lookup.
+  assert.equal(existsSync(join(build, "locale/zh.json")), true);
   assert.equal(existsSync(join(build, "lib/index.js")), false);
   rmSync(join(fixture, "src"), { recursive: true });
   assert.throws(() => copyWorkflowSource(fixture, join(fixture, "missing")), /src/);

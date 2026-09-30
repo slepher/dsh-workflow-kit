@@ -18,16 +18,23 @@ test("exports the workflow boundary", () => {
   assert.equal(manifest.exports["./client"].default, "./lib/client.js");
   assert.equal(manifest.dsh.client.platform, "web");
   assert.equal("dsh-codex-kit-backend" in manifest.dependencies, false);
-  assert.equal(manifest.peerDependencies["dsh-codex-app-provider"], "0.1.0");
+  assert.equal(manifest.peerDependencies["dsh-codex-app-provider"], "0.1.1");
   assert.equal("dsh-codex-kit-backend" in manifest.devDependencies, false);
   assert.doesNotMatch(JSON.stringify(manifest) + lock, /file:\.\.\/dsh-codex-kit|\/tmp\/|\/home\//);
   assert.equal(JSON.parse(lock).packages["node_modules/dsh-codex-kit-backend"], undefined);
   assert.equal("dsh-codex-kit" in manifest.dependencies, false);
   assert.equal(manifest.peerDependenciesMeta.react.optional, true);
-  // The Host half imports the connection request/response schemas at runtime, so
-  // this peer must stay installable; marking it optional left an isolated
-  // consumer without the package and failed at import time.
-  assert.equal(manifest.peerDependenciesMeta["@deepseek-ai/dsh-client-connection"], undefined);
+  // Every host package is declared optionally with a `*` range, so the harness
+  // compatibility gate never judges this package by a pinned generation and one
+  // build loads on several dsh releases. The Host half imports the connection
+  // request/response schemas at runtime, so an isolated consumer must install the
+  // host generation itself; `scripts/pack-check.mjs` and
+  // `scripts/verify-dsh-compat.mjs` do.
+  for (const [name, range] of Object.entries(manifest.peerDependencies)) {
+    if (!name.startsWith("@deepseek-ai/")) continue;
+    assert.equal(range, "*", `${name} must accept every host generation`);
+    assert.equal(manifest.peerDependenciesMeta[name]?.optional, true, `${name} must be optional`);
+  }
   const patch = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
   assert.match(patch, /id: dsh-workflow-kit\s+name: dsh-workflow-kit/);
 });

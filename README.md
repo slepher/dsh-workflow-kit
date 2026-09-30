@@ -75,9 +75,9 @@ A file write inside the repository root rather than a lane is still an assignmen
 
 ## Build and validation
 
-Requires Node >=22.19, Python 3, Git, `dsh-codex-app-provider` 0.1.0 and a coordinated DSH package set containing the native execution interfaces. The checked-in dependency locks identify local tarballs built from DSH 0.1.5-rc.1 source with changes; registry rc.1 alone does not implement those interfaces.
+Requires Node >=22.19, Python 3, Git and `dsh-codex-app-provider` 0.1.1. Every Host package is an optional `*` peer, so one build loads on each release listed in `dsh.compatibility.dshReleases`; the checked-in `devDependencies` pin the generation used for type checking and tests, and an isolated install brings its own Host generation (`scripts/pack-check.mjs`, and `scripts/verify-dsh-compat.mjs` in the provider checkout).
 
-Build and pack the provider and coordinated DSH dependencies first, then:
+Build and pack the provider first, then:
 
 ```bash
 npm run prepare:local

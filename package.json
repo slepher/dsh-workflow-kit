@@ -1,6 +1,6 @@
 {
   "name": "dsh-workflow-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -39,22 +39,22 @@
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-connection": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-locale": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-session": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-session": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-session-persistence": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-settings": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-subagent": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "^0.1.7-rc.2",
-    "dsh-codex-app-provider": "0.1.0",
-    "react": "^18.3.1",
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-renderer": "*",
+    "@deepseek-ai/dsh-client-ui-session": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-session-persistence": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "dsh-codex-app-provider": "0.1.1",
+    "react": "^18.3.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-system-prompt": {
@@ -80,9 +80,34 @@
     },
     "@deepseek-ai/dsh-client-ui-session": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subagent": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "dsh-codex-app-provider": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "0.1.7-rc.2",
     "@deepseek-ai/dsh-api-remotes": "0.1.7-rc.2",
     "@deepseek-ai/dsh-api-session-controller": "0.1.7-rc.2",
@@ -100,15 +125,15 @@
     "@deepseek-ai/dsh-session-persistence": "0.1.7-rc.2",
     "@deepseek-ai/dsh-settings": "0.1.7-rc.2",
     "@deepseek-ai/dsh-subagent": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.7-rc.2",
     "@types/node": "^24.0.0",
     "@types/react": "18.3.1",
     "@types/react-dom": "^18.3.1",
-    "dsh-codex-app-provider": "file:../dsh-codex-app-provider/dsh-codex-app-provider-0.1.0.tgz",
+    "dsh-codex-app-provider": "file:../dsh-codex-app-provider/dsh-codex-app-provider-0.1.1.tgz",
     "esbuild": "0.25.12",
     "react": "18.3.1",
     "react-dom": "^18.3.1",
-    "typescript": "^5.9.0",
-    "@deepseek-ai/cordis": "^4.0.1"
+    "typescript": "^5.9.0"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -129,6 +154,12 @@
         "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.1.7-rc.2": "compatible",
+        "0.2.0-rc.2": "compatible"
+      }
     }
   }
 }
