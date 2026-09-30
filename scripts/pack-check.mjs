@@ -22,9 +22,10 @@ execFileSync("npm", ["run", "build"], { cwd: workflowSource, stdio: "inherit" })
 const pack = cwd => JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", temp], { cwd, encoding: "utf8" }))[0];
 const providerPack = pack(providerSource), workflowPack = pack(workflowSource);
 assertHeadlessFiles(workflowPack.files);
-const overrides = manifest(join(provider, "scripts/dsh-baseline.json"));
-for (const [name, path] of Object.entries(manifest(join(provider, "scripts/dsh-coordinated.json")).packages)) overrides[name] = `file:${resolve(provider, path)}`;
-overrides["dsh-codex-app-provider"] = `file:${join(temp, providerPack.filename)}`;
+// Nothing pins the dsh family here: the isolated profile installs the plugin
+// tarballs and lets npm resolve the family from their own peer ranges, the way a
+// real profile does. The sibling plugin resolves to the pack under test.
+const overrides = { "dsh-codex-app-provider": `file:${join(temp, providerPack.filename)}` };
 for (const name of ["provider", "workflow"]) {
   const directory = join(temp, name); mkdirSync(directory);
   const dependencies = { "dsh-codex-app-provider": overrides["dsh-codex-app-provider"], ...(name === "workflow" ? { "dsh-workflow-kit": `file:${join(temp, workflowPack.filename)}` } : {}) };
