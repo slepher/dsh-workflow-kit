@@ -1,129 +1,266 @@
 # dsh-workflow-kit
 
-> 当前用户需求：[plugin-requirements.md](../plugin-requirements.md)。
-> 下文旧阶段的协调 DSH 包、角色指令透传与强制只读声明按统一基线修订。
+A DSH (DeepSeek Harness) plugin that owns workflow roles and profiles, task contracts, lanes, acceptance, integration and release, and delegates Codex execution to `dsh-codex-app-provider`.
 
-This README retains project and implementation notes. [upgrade.md](upgrade.md)
-and [upgrade prompts](docs/upgrade-prompts.md) record the strategy design and prompt
-wiring; the unified requirements above govern current work. The older architecture,
-HANDOFF and NEXT-STEPS documents are historical and do not define current UI scope.
+English | [中文](README.zh-CN.md)
 
-Workflow owns role/profile files, native Session profile selections, task contracts, lanes, acceptance, integration and release. Codex execution runs through DSH native children and the single `dsh-codex-app-provider` Host plugin. The same package provides a `./client` half: a configuration picker in the composer and the Workflow page in DSH settings.
+- [Overview](#overview)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Configuration and profiles](#configuration-and-profiles)
+- [Strategies](#strategies)
+- [Session gate and write grants](#session-gate-and-write-grants)
+- [Tools and the client UI](#tools-and-the-client-ui)
+- [Compatibility](#compatibility)
+- [Development](#development)
+- [Verifying the model-facing surface](#verifying-the-model-facing-surface)
+- [Current validation status](#current-validation-status)
+- [License](#license)
+- [Related repositories](#related-repositories)
 
-## Runtime configuration
+## Overview
 
-Load `dsh-codex-app-provider` before this package. Configure one workflow entry:
+`dsh-workflow-kit` is a Cordis plugin for DSH (package scope `@deepseek-ai/dsh-*`). It runs task-contract workflows: a plan is adopted as a generation, tasks are dispatched into git lanes, results are recorded and reviewed, candidates are integrated, and a release is prepared and completed. The plugin owns the orchestration state, the role catalogue, the write grants and the pre-execution gate that decide what a worker may do.
 
-```yaml
-- id: dsh-workflow-kit
-  config:
-    stateDir: /absolute/isolated/state/workflow
-    workflowSkillDir: /absolute/skills/codex-workflow
-    implementationStandardDir: /absolute/skills/audit-implementation-simplicity
-    defaultProfile: gpt-workflow
-```
+The package has two halves:
 
-`stateDir` contains workflow records, acceptance and native child creation snapshots. Native Session/thread execution state and terminal report contents remain execution-owned. Existing legacy data is retained. `workflowSkillDir` identifies the installed task-contract tooling and role protocols; `implementationStandardDir` defaults to the sibling `audit-implementation-simplicity` skill.
+- **Host half** (`lib/index.js`) registers the `codex_workflow` tool, installs the workflow session gate, serves the browser profile channel, and persists workflow state (runs, lanes, native child bindings, Session selections).
+- **Client half** (`./client`, bundled as `lib/client.js`) adds a configuration picker in the composer and the Workflow page in DSH settings.
 
-## Configurations
+Codex execution is not implemented here. Children are DSH-native subagent Sessions created through `ctx.subagents`, and the Codex provider supplies the execution engine, the native child facts and the `codexToolGate` capability (`src/workers.ts`, `src/types.ts`). The provider must be loaded before this plugin: the plugin injects `codexExecution` and `codexToolGate` (`src/host.ts:26`), and mounting it against a provider that publishes no gate fails with an explicit error instead of starting an ungated child (`src/host.ts:166`).
 
-The two configurations this package ships are plugin content: `profiles/gpt-workflow.json` (`codex` provider) and `profiles/ds-workflow.json` (`deepseek-official/deepseek-flash`, with the codex `high`/`medium` effort split translated to `max`/`high`). Each maps the fixed configuration-key catalog to explicit `provider`, `model` and `reasoningEffort` values. The shipped `gpt-workflow` model list is `gpt-6-astra` (planner), `gpt-6.1-sol` (reviewer and sup coding) and `gpt-6-luna` (context collector, def coding, evidence runner, full tester); a deployment's own Profile may name any model its adapter advertises. Role developer instructions are composed at run time from `lib/generated/prompts.ts` and the deployment's installed skill layout; nothing is installed into DSH home, and per-deployment state lives only in the `dsh-workflow-kit` settings namespace.
+## Requirements
 
-The Host resolves each key through three layers: the stored user override, the shipped configuration, then the shipped key default. Stored overrides are sparse, so editing one key leaves the others inherited, and clearing a configuration's stored section reverts it whole. A stored configuration whose id matches a shipped one overrides it; any other id is a user-authored configuration. The Workflow settings page writes those overrides as path mutations, and the composer picker only selects.
+| Requirement | Value | Source |
+| --- | --- | --- |
+| Node.js | `>=22.19.0` | `engines.node` in `package.json` |
+| Python 3 | `python3` on `PATH` | `src/workflow.ts:195` runs `python3 scripts/workflowctl.py` |
+| Git | `git` on `PATH` | `src/workflow.ts:213` |
+| `dsh-codex-app-provider` | `0.1.1`, loaded first | `peerDependencies` in `package.json` |
+| DSH releases | `0.1.7-rc.2` and `0.2.0-rc.2` | `dsh.compatibility.dshReleases` in `package.json` |
 
-`gpt-6-sol` was replaced by `gpt-6.1-sol` in the shipped `gpt-workflow` roles and key defaults; the earlier id is no longer a shipped default, so a deployment that still wants it states it explicitly in its own Profile or stored override.
+Python 3 and Git are runtime requirements, not just build requirements: adopting a generation exports the plan and validating a recorded result both shell out to `scripts/workflowctl.py`, and lane creation and candidate diffs shell out to `git`.
 
-Two catalogs are deliberately separate. The **execution role catalog** (`planner`, `reviewer`, `context_collector`, `coding_worker`, `evidence_runner`, `full_tester`) is what a contract may name as `Role` and what the dispatch tool can start. The **configuration-key catalog** (`planner`, `reviewer`, `context_collector`, `def_coding_worker`, `sup_coding_worker`, `evidence_runner`, `full_tester`) is what Profiles, stored overrides and the settings page edit; the two legacy coding keys stay stable so existing model configuration needs no migration. `def_coding_worker` and `sup_coding_worker` are model configurations for the one `coding_worker` role, not roles or permission levels; a legacy contract naming them is refused at dispatch with an explicit revision message, while already-created children keep their recorded configuration.
+## Install
+
+1. **Build and pack the provider first.** The `dsh-codex-app-provider` devDependency is a local `file:` tarball spec pointing at `../dsh-codex-app-provider/dsh-codex-app-provider-0.1.1.tgz` (a path outside this repository; it is not linked here). Build the provider checkout and run `npm pack` there so that tarball exists.
+
+2. **Prepare locked local dependencies.**
+
+   ```bash
+   npm run prepare:local
+   ```
+
+   `scripts/prepare-local.mjs` verifies that every `file:` devDependency ends in `.tgz` and exists, runs locked `npm ci --ignore-scripts`, and fails if `package.json` or `package-lock.json` changed.
+
+3. **Build the plugin.**
+
+   ```bash
+   npm run build
+   ```
+
+   This generates the prompt skills (`src/prompts/*.md` → `src/generated/prompts.ts`), type-checks and emits the Host (`tsc -p tsconfig.json`), emits the client type declarations (`tsc -p tsconfig.client.json`), and bundles the client (`esbuild` → `lib/client.js`).
+
+4. **Add the plugin to a Cordis profile** after the provider, and configure one workflow entry:
+
+   ```yaml
+   - id: dsh-workflow-kit
+     name: dsh-workflow-kit
+     config:
+       stateDir: /absolute/isolated/state/workflow
+       workflowSkillDir: /absolute/skills/codex-workflow
+       implementationStandardDir: /absolute/skills/audit-implementation-simplicity
+       defaultProfile: gpt-workflow
+   ```
+
+   The package's own bundle patch (`dsh.bundle.patch` → `cordis.patch.yml`) inserts the `dsh-workflow-kit` entry (`id` and `name`), so the profile only supplies the `config` block.
+
+Configuration fields (`src/host.ts:36`):
+
+| Field | Meaning |
+| --- | --- |
+| `stateDir` | Absolute persistence root. It holds `orchestration.json` with runs, lanes, Session profile/strategy selections and native child bindings. When omitted, the launched profile's own state directory is used: `<profile home>/state/<profile name>/workflow`. Without a launched profile it falls back to `$DSH_HOME/state/default/workflow`, then to `~/.dsh/state/default/workflow`. A non-absolute `stateDir` is refused. |
+| `workflowSkillDir` | Directory of the installed `codex-workflow` skill. Each role's protocol document is read from `<workflowSkillDir>/references/roles/<protocol>`. |
+| `implementationStandardDir` | Directory of the installed implementation standard, read as `<implementationStandardDir>/SKILL.md`. When omitted it defaults to the sibling `audit-implementation-simplicity` skill next to `workflowSkillDir`. |
+| `defaultProfile` | Deployment fallback for the configuration a new Session adopts. A stored `defaultConfig` selection wins over it. |
+
+The remaining four entry fields — `defaultConfig`, `codingStrategy`, `integrateStrategy` and `configs` — are volatile settings that the plugin's own configuration form edits live, without remounting the plugin (`src/settings.ts:28`, `src/host.ts:70`).
+
+## Configuration and profiles
+
+Two catalogs are deliberately separate:
+
+| Catalog | Members | Used by |
+| --- | --- | --- |
+| **Execution role catalog** | `planner`, `reviewer`, `context_collector`, `coding_worker`, `evidence_runner`, `full_tester` | What a contract may name as its `Role`, and what the dispatch tool can start. |
+| **Configuration-key catalog** | `planner`, `reviewer`, `context_collector`, `def_coding_worker`, `sup_coding_worker`, `evidence_runner`, `full_tester` | What Profiles, stored overrides and the settings page edit. |
+
+`def_coding_worker` and `sup_coding_worker` are model configurations for the single `coding_worker` execution role — not roles, and not permission levels. The keys stay stable so existing Profile files and stored overrides need no migration (`src/roles.ts:33`). A legacy contract or delegation that names them as a role is refused before it starts:
+
+- at dispatch: `Legacy coding role <name> must be revised to Role: coding_worker before dispatch; the bound strategy selects the sup/def configuration` (`src/workflow.ts:253`);
+- at delegation: the same refusal with `before delegation` (`src/workflow.ts:269`).
+
+Already-created children keep the configuration recorded when they were created.
+
+**Three-layer key resolution.** Each configuration key resolves through, in order: the **stored user override**, then the **shipped configuration**, then the **shipped key default** (`src/configuration.ts:147`). Stored overrides are sparse, so editing one key leaves the others inherited; clearing a configuration's stored section reverts it whole. A stored configuration whose id matches a shipped one overrides it; any other id is a user-authored configuration.
+
+Shipped profiles (package content, not user configuration):
+
+| Profile | Provider | Roles |
+| --- | --- | --- |
+| `gpt-workflow` (`profiles/gpt-workflow.json`) | `codex` | `planner` = `gpt-6-astra` (high); `reviewer` = `gpt-6.1-sol` (high); `context_collector` = `gpt-6-luna` (high); `def_coding_worker` = `gpt-6-luna` (medium); `sup_coding_worker` = `gpt-6.1-sol` (medium); `evidence_runner` = `gpt-6-luna` (medium); `full_tester` = `gpt-6-luna` (medium). |
+| `ds-workflow` (`profiles/ds-workflow.json`) | `deepseek-official` | every key is `deepseek-flash`, at `max` effort for `planner`, `reviewer` and `context_collector`, and `high` for the coding, evidence and tester keys. |
+
+These shipped key defaults are also what an unknown or missing configuration falls back to (`src/roles.ts:44`). The older `gpt-6-sol` id is no longer a shipped default anywhere; a deployment that still wants it must state it explicitly in its own Profile or stored override.
+
+**Settings page and composer picker.** The Workflow settings page (`settings.section`, id `workflow`) edits the stored layer as path mutations: per-key provider/model/effort editors, plus copy, rename, delete, reset and set-default actions. Built-in configurations are editable in place through sparse overrides and can be reset whole; a copy is an ordinary user configuration that can be renamed or deleted. The `manager` row is listed but not editable — the manager runs on the composer's model. The composer picker (`conversation.input.left`, id `workflow-config`) only *selects* a configuration and a Session coding strategy; it re-reads the catalog whenever it opens, and both chips are hidden in a subagent Session, whose profile and strategy were already fixed by the delegation that started it.
 
 ## Strategies
 
-Settings → Workflow opens a **Strategy** tab beside the configuration editors. It stores two independent defaults: `codingStrategy` (default `adaptive`, overridable per Session from the composer) and `integrateStrategy` (default `economy`, no Session scope, never inherited from the coding choice). Both are written as separate settings paths, so one change never rewrites the other.
+A strategy is not a permission level. It decides which Profile model configuration a coding execution runs on, whether that execution may hand off or ask for bounded expert consultation, and which phase prompt the Host binds. The execution role stays `coding_worker` throughout.
 
-The bound strategy decides which coding configuration runs, which phase prompt the Host binds, and whether the execution may hand off or request bounded consultation: `economy` and `expert` run independently on def and sup, `adaptive` runs def with bounded consultation, and `bootstrap` opens on sup and continues on def. Effort differences do not count: when a Profile's sup and def resolve to the same provider and model, the effective strategy is the derived `independent`, the composer hides the strategy control, and def runs the whole assignment. That is a configuration-derived behaviour, not a fifth selectable strategy, and the stored preference is retained for a Profile with different models.
+Four strategies are selectable — `economy`, `adaptive`, `bootstrap`, `expert` (`src/constants.ts:27`). The stored coding default is `adaptive`; the stored integrate default is `economy`. Both are written to separate settings paths, so one change never rewrites the other. Coding has a per-Session override in the composer; integration has no Session scope and always uses the stored integrate setting (`src/store.ts:48`, `src/profile-rpc.ts:108`).
 
-Each coding dispatch and each integration records its effective strategy plus the sup/def Profile snapshot it was bound to. Later Profile or settings edits therefore never rewrite a running execution or a prepared integration; a refreshed integration binds the settings in force when it is prepared. Integration review and repair keep their own roles and permissions (a reviewer stays read-only, a repair `coding_worker` keeps its write scope) while the integrate strategy selects the model configuration, and ordinary task review keeps the reviewer configuration.
+| Requested strategy | Phase | Model configuration | Handoff | Consultation | Bound phase prompt |
+| --- | --- | --- | --- | --- | --- |
+| `economy` | main | `def_coding_worker` | no | no | `coding-independent` |
+| `expert` | main | `sup_coding_worker` | no | no | `coding-independent` |
+| `adaptive` | main | `def_coding_worker` | no | yes | `coding-adaptive` |
+| `bootstrap` | opening | `sup_coding_worker` | yes | no | `coding-bootstrap-opening` |
+| `bootstrap` | continuation | `def_coding_worker` | no | yes | `coding-bootstrap-continuation`, `coding-adaptive` |
+| any | consultation | `sup_coding_worker` | no | no | `coding-consultation` |
 
-## Session gate
+(source: `bindCodingStrategy`, `src/strategy.ts:69`)
 
-Every child this Host starts is bound before it starts to `{ role, hook, args }` and that binding is stored with its record. `role` is this plugin's own business label — the provider never enumerates or interprets it. The rules live in one deterministic function (`src/gate.ts`); both entry points call it, and neither calls a model:
+**Derived `independent`.** When a Profile's `sup_coding_worker` and `def_coding_worker` resolve to the same provider and model, both selectable strategies are inert: the effective strategy is `independent`, def runs the whole assignment, no handoff or consultation is authorized, and the composer hides the strategy control. Effort is deliberately ignored in that comparison, and the stored preference is retained so it takes effect again under a Profile with different models (`src/strategy.ts:31`, `src/client/ConfigPicker.tsx:122`). This is a configuration-derived behaviour, not a fifth selectable strategy.
 
-- the **DSH native** path installs one global `ctx.tools.guard()` that answers only for a Session this Host registered (a managed child's stored binding, or the manager's binding derived from the run it adopted), so a denial happens before the tool body;
-- the **Codex** path registers the same function with `ctx.codexToolGate`, and the provider carries every PreToolUse hook call to it over the socket its hook command talks to. See the provider README for the deployment prerequisite.
+**Binding.** Each coding dispatch and each integration records its effective strategy and the sup/def Profile snapshot it was bound to, so later Profile or settings edits never rewrite a running execution or a prepared integration; a refreshed integration binds the settings in force when it is prepared (`src/configuration.ts:199`). Integration review and repair keep their own roles and permissions — a reviewer stays read-only and a repair `coding_worker` keeps its write scope — while the integrate strategy selects the model configuration (`src/workflow.ts:400`).
 
-What is checked:
+**Delegation is the exception.** An ordinary `delegate` child has no attempt and no generation, so the Host cannot advance a handoff or deliver a consultation report for it: a delegated coding child always runs the def configuration independently, regardless of the Session's coding strategy (`src/workflow.ts:270`).
 
-- A **manager** is refused the known shell entry points (`bash`, `pwsh`, `Bash`, `exec_command`, `shell`, `shell_command`, `write_stdin`) and may write only its generation's `summary.md` (plus whatever auxiliary grants an assignment named). A **registered child** may run a shell: this gate does not read a program's file effects, and the existing sandbox still applies.
-- Every registered Session is refused the scheduling entry points — `subagent`, `subagent_fork`, `workflow`, `ralph`, `spawn_teammate`, `wait_agent`, `team_task_*`, `send_message`, `interrupt_agent`, `codex_workers`, and the Codex `spawn_agent`/`Agent`/`resume_agent`/`close_agent`. Read-only queries (`list_agents`, `list_subagent_models`, `job_*`) stay available.
-- Known file writes are matched against the assignment's own grants: `write`/`edit` (`file_path`), `str_replace_editor` (`path`; `view` is a read), and Codex `apply_patch` (every Add/Update/Delete/Move path, the whole patch refused if any one path is not authorized). A coding assignment owns its task's `Owned paths` one by one — never a whole lane — plus its declared Write paths, its concrete report paths and its artifacts. A review, a consultation, an integration repair and a non-coding task own only what they were assigned. Paths are checked both lexically and after symlink resolution, and product grants are additionally confined to the lane.
-- A file write whose Session cwd is missing is refused rather than resolved against the server's launch directory, and a cwd that is not the assignment's is refused rather than rewritten.
+## Session gate and write grants
+
+Every child the Host starts is bound before it starts to `{ role, hook, args }`, and that binding is stored with its record (`src/gate.ts:198`). `role` is this plugin's own business label; the provider never enumerates or interprets it. All rules live in one deterministic function, `workflowGateHandler`, and neither entry point calls a model (`src/gate.ts:359`):
+
+- **DSH native path.** One global `ctx.tools.guard()` answers only for a Session this Host registered — a managed child's stored binding, or the manager's binding derived from the run it adopted — so a denial happens before the tool body (`src/host.ts:106`, `src/host.ts:168`).
+- **Codex path.** The same function is registered under the provider's `codexToolGate` capability as the `workflow.preToolUse` hook; the provider forwards every PreToolUse call to it (`src/host.ts:165`, `src/gate.ts:21`).
+
+What is refused:
+
+- A **manager** is refused the known shell entry points (`bash`, `pwsh`, `Bash`, `exec_command`, `shell`, `shell_command`, `write_stdin`) and may write only its generation's `summary.md` plus whatever auxiliary grants an assignment named. A registered child may run a shell: the gate does not read a program's file effects, and the existing sandbox still applies.
+- Every registered Session is refused the scheduling entry points: `subagent`, `subagent_fork`, `workflow`, `ralph`, `spawn_teammate`, `wait_agent`, `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update`, `send_message`, `interrupt_agent`, `codex_workers`, and the Codex `spawn_agent`, `Agent`, `resume_agent`, `close_agent`. Read-only queries (`list_agents`, `list_subagent_models`, `job_*`) stay available.
+- Known file writes are matched against the assignment's own grants (`write`/`edit` via `file_path`; `str_replace_editor` via `path`, where `view` is a read and only `create`/`str_replace`/`insert` write; Codex `apply_patch` against every Add/Update/Delete/Move directive, the whole patch refused if any one path is unauthorized). A coding assignment owns its task's `Owned paths` one by one — never a whole lane — plus its declared `Write` paths, its concrete report paths and its artifacts. A review, a consultation, an integration repair and a non-coding task own only what they were assigned. Paths are checked both lexically and after symlink resolution, and product grants are additionally confined to the lane.
+- A file write whose Session cwd is missing is refused rather than resolved against the server's launch directory. The operation's own reported cwd resolves a relative path; it does not have to equal the assignment's cwd, because the assignment states which paths may be written, not where the caller stands.
 
 Deliberately **not** covered, and not claimed: file effects inside a shell program, MCP tools registered as `mcp__<server>__<name>`, and `cordis_define`/`cordis_run`, which can register and run arbitrary code at runtime. Unknown tools are left to the rest of the pipeline.
 
-A denial always starts with `workflow gate: `, so it is machine-recognizable in a session log. A Session with no binding — an ordinary delegation, a legacy record written before the gate existed — is untouched.
+A denial always starts with `workflow gate: `, so it is machine-recognizable in a session log (`src/gate.ts:31`). A refusal names both the path that was refused and the paths the assignment did authorize (a directory grant carries a trailing separator), so a worker that resolved a relative path against the wrong directory can correct itself. A Session with no binding — an ordinary delegation, or a legacy record written before the gate existed — is untouched.
 
-A file write is resolved against the directory the operation itself reports, and the resolved path — lexically and after symlink resolution — must fall inside one of the assignment's grants. The assignment does **not** have to be the directory the caller stands in: it states which paths may be written, not where the writer is. So a worker in a lane may write `worktree/lane1/src/test.ts` relative to the repository root, or the same file by its absolute path; both resolve inside the lane's grant. What is refused is a path that resolves outside every grant — including one written as if the lane were the working directory, such as a bare `src/test.ts` from the repository root, which lands in `<repository>/src/test.ts`.
+**Native child workspace nuance.** DSH has no way to place a child in another directory: the stock subagent runtime copies the parent's workspace into the child Session header, so a DSH-native child resolves relative paths against the repository. A Codex child's thread is started in the assigned directory, so relative paths there resolve into the lane. The prompts therefore state where the child really runs, and a native child is told to run every command with the assigned directory as that command's working directory (`workdir`, or `cd` first) — otherwise it would write into its lane and then test the repository, a failure the gate cannot catch because the command succeeds on the wrong tree (`src/workflow.ts:299`).
 
-That last case is the one place where a **DSH-native** child differs from a Codex child. DSH has no way to place a child in another directory: the stock subagent runtime copies the parent's workspace into the child Session header, so a native child's tools resolve relative paths against the repository. A Codex child's thread is started in the assigned directory, so relative paths there resolve into the lane. The prompts therefore state where the child really runs. A Codex child is told its task and command cwd is the assigned directory. A native child is told its Session workspace as well, and — because a workspace resolves a build, a test or a `git` call just as much as it resolves a filename — it is told to run every command with the assigned directory as that command's working directory (`workdir`, or `cd` first). Without that, a native lane worker would write into its lane and then test the repository, which is the failure mode a denial cannot catch: the command succeeds, on the wrong tree. The same note is appended to a review prompt and to an integration repair, which run in the integration worktree rather than in the Session workspace. A missing Session workspace refuses the file write rather than falling back to the server's launch directory.
+**Lanes.** Every worktree a run creates goes under `<repository>/agentwork/.lanes/lane-NN` (names are zero-padded, e.g. `lane-01`), so a finished goal leaves no worktree inside its own directory to clean up and the next goal in that repository reuses the ones already there (`src/workflow.ts:40`, `src/workflow.ts:1015`). The Host enforces the plan's declared concurrency and lane capacity, live ownership of an assigned path, and a task's declared workspace when it names no lane (`src/workflow.ts:327`, `src/workflow.ts:998`).
 
-A refusal is written to be acted on, not just obeyed: it names the path that was refused **and** the paths the assignment did authorize (a directory grant carries a trailing separator). A worker that resolved a relative path against the wrong directory can read the granted paths off the denial and correct itself without another round trip to the manager. A worker also writes the documents it was told to produce outside its lane — its declared report paths and its artifacts directory are granted as auxiliary writes, while an unassigned neighbour in that same results directory is not.
+## Tools and the client UI
 
-Lanes are a repository resource, not a goal artifact. Every worktree a run creates goes under `<repository>/agentwork/.lanes/lane-NN`, so a finished goal leaves no worktree inside its own directory to clean up, and the next goal in that repository reuses the ones already there: a released lane keeps its directory and is checked out afresh at the next goal's input. A record written while lanes still lived inside a goal keeps the root its own lanes already name, so nothing persisted is rewritten or relocated.
+The Host registers exactly one model-facing tool, `codex_workflow` (`src/host.ts:170`). Its `action` parameter accepts:
 
-The Host enforces the plan's own declared worker budget, the live ownership of an assigned path, and a task's declared workspace when it names no lane. It does **not** police concurrency *between* goals: whether two goals advance at the same time is the operator's decision, and a separate repository root is how that decision is expressed. Work that should share a directory is asking for a worktree the operator creates and names in the task's `Cwd` — which must still be inside the repository, because an assignment never escapes its workspace.
+| Action | Kind | Purpose |
+| --- | --- | --- |
+| `roles` | read | List the execution role catalogue with each role's provider, model, effort and whether it implements. |
+| `status` | read | Report the adopted generation, its tasks, lanes, workers and pending work. |
+| `adopt` | write | Adopt an absolute `<repository>/agentwork/<goal>/generation-N` directory. |
+| `dispatch` | write | Start a task's attempt, optionally naming `lane` and `base`. |
+| `record-result` | write | Record the retained report file (`result`, absolute) holding a task result. |
+| `accept` | write | Accept a recorded result. |
+| `integrate` | write | Prepare or advance an integration of accepted candidates. |
+| `resolve` | write | Resolve an integration conflict under a reviewer decision. |
+| `resolved` | write | Record the resolution outcome. |
+| `refresh-integration` | write | Re-bind an integration to the settings and snapshot in force now. |
+| `continue` | write | Send a correction to a task's worker or to a named worker. |
+| `archive` | write | Archive a stopped attempt without delivering its candidate. |
+| `release` | write | Release a task's lane and ownership after work is settled. |
+| `complete` | check | Check only: every executable task must have delivered and released evidence and no lane or child may still be open. It performs no Git operation and refuses with the outstanding disposition. |
+| `delegate` | write | Assign one bounded task to a role without adopting a generation; pass `role` and `text`. With `child` it continues or steers an existing child, and with `stop: true` it stops the current turn. |
 
-A file write inside the repository root rather than a lane is still an assignment like any other: the gate authorizes its paths and refuses everything else, and the manager Session is likewise expected to run with the repository as its workspace, since that is what its own binding records.
+The tool also takes `generation`, `task`, `attempt`, `lane`, `base`, `result`, `text`, `recipient`, `processesStopped`, `role`, `child`, `stop`, `cwd`, `name`, `writes` and `network` (`src/host.ts:175`). `delegate` answers before its child has worked: every result carries the child handle plus `reply`, or `reply: null` with the reason there is none, and a child that has not settled yet announces itself through the runtime's own settlement notice on a later turn. `codex_workers` tracks its own workers and cannot read a child started here (`src/host.ts:174`).
 
-## Build and validation
+The client half registers:
 
-Requires Node >=22.19, Python 3, Git and `dsh-codex-app-provider` 0.1.1. Every Host package is an optional `*` peer, so one build loads on each release listed in `dsh.compatibility.dshReleases`; the checked-in `devDependencies` pin the generation used for type checking and tests, and an isolated install brings its own Host generation (`scripts/pack-check.mjs`, and `scripts/verify-dsh-compat.mjs` in the provider checkout).
+- a **composer configuration picker** in `conversation.input.left`, whose chips select the Session's workflow configuration and coding strategy;
+- the **Workflow settings page** in `settings.section` (id `workflow`), with a **Strategy** tab holding the two independent strategy defaults and a **Configurations** tab holding the per-key editors, described above (`src/client/index.ts:49`, `src/client/index.ts:60`).
 
-Build and pack the provider first, then:
+## Compatibility
 
-```bash
-npm run prepare:local
-npm run build
-node --test --test-isolation=none test/install-configuration.test.mjs test/prepare-local.test.mjs test/profile-rpc.test.mjs test/host.test.mjs test/native-workers.test.mjs test/backend-consumer.test.mjs test/workflow.test.mjs test/configuration.test.mjs test/store.test.mjs
+`package.json` declares the DSH releases this build is checked against:
+
+```json
+"dsh": { "compatibility": { "dshReleases": { "0.1.7-rc.2": "compatible", "0.2.0-rc.2": "compatible" } } }
 ```
 
-`prepare:local` checks local tarballs before running locked `npm ci`; it does not build or modify another checkout. The compiled Host, its shipped `profiles/` content, the same-package client and `scripts/workflowctl.py` ship together. Native DSH Conversation supplies the child transcript and execution controls; the workflow client supplies the composer configuration picker and the Workflow settings page.
+Every DSH Host package is an **optional `*` peer dependency** (`peerDependencies` plus `peerDependenciesMeta`), so one build can load on each listed release; `dsh-codex-app-provider` is the exception — an optional peer pinned to `0.1.1`. The checked-in `devDependencies` pin the single generation used for type checking and tests (`0.1.7-rc.2`).
 
-## Agent verification of the model-facing surface
+An isolated install brings its own Host generation: `scripts/pack-check.mjs` requires the `@deepseek-ai/dsh-*` devDependency specs to name exactly one generation, installs `@deepseek-ai/dsh@<that generation>` together with the freshly packed provider and (for the workflow combination) this package, and overrides `dsh-codex-app-provider` to the packed tarball.
 
-The test suite covers the behaviour behind the tool: planning, delegation boundaries, strategies, storage, and the Host's routing. It cannot cover the tool's *model-facing* surface — the action set, the parameter semantics, and the error wording an agent actually reads. Those only fail inside a real conversation, so they are verified by holding one.
+## Development
+
+All commands run from the repository root.
+
+| Command | What it does |
+| --- | --- |
+| `npm run build` | Generates prompt skills, compiles the Host (`tsconfig.json`), emits client declarations (`tsconfig.client.json`), and bundles the client with esbuild into `lib/client.js`. |
+| `npm test` | Runs `node --test test/*.test.mjs` (26 test files). Tests import the compiled `lib/*`, so run `npm run build` first. |
+| `npm run prepare:local` | Verifies local `file:` tarballs exist and runs locked `npm ci` without modifying the manifests. |
+| `npm run pack:check` | Packs this package and the provider in a temporary directory, installs provider-only and provider+workflow combinations at the pinned Host generation, and mounts the real Cordis runtime without calling a model or a browser. It retains the temporary directory and prints its path. The provider checkout is `../dsh-codex-app-provider` unless `DSH_CODEX_APP_PROVIDER_CHECKOUT` names another one. |
+| `npm run dev` | Linux only. `--profile <name>` (default `workflow-dev`), `--app-provider <checkout>` (or `DSH_CODEX_APP_PROVIDER_CHECKOUT`), and repeatable `--patch <file>` overlays. Requires the profile to load `dsh-codex-app-provider` then `dsh-workflow-kit`, an absolute provider `stateDir`, and HMR roots covering both checkouts' `lib`. It builds both checkouts, starts both watchers, and either starts one `dsh` Host on port 0 or reuses a live same-profile Host (`/proc`-based owner inspection). A reused Host is left running on exit. |
+| `npm run dev:host` | Starts or checks a dev Host without the long-lived watchers. `--profile` (default `workflow-kit-dev`), `--port` (default `3080`), `--check` to verify only. |
+| `npm run publish` | Builds in a staging directory and replaces `lib/` in one rename, so a watching Host never sees a half-written bundle. |
+| `npm run publish:watch` | Same, republishing on every change under `src/`. |
+
+**Watched-publish behaviour.** `scripts/watch.mjs` (used by `npm run dev`) builds in `.watch/workflow-build` and atomically replaces `lib/`. It also watches the provider's `src/`: a provider execution-source change pauses publication until the Host is restarted, while provider `client/`-only changes are ignored and can still rebuild for a page refresh (`scripts/watch.mjs:68`). `npm run publish:watch` publishes complete staged builds the same way, driven only by this package's `src/`.
+
+Design records for the strategy and prompt wiring live in [upgrade.md](upgrade.md) and [docs/upgrade-prompts.md](docs/upgrade-prompts.md).
+
+## Verifying the model-facing surface
+
+The test suite covers the behaviour behind the tool — planning, delegation boundaries, strategies, storage, and the Host's routing. It cannot cover the tool's *model-facing* surface: the action set, the parameter semantics, and the error wording an agent actually reads. Those only fail inside a real conversation.
 
 **Required whenever the tool's description, its parameters, its error text, or its action set changes.**
 
-The transport is scripted and the judgement is not:
+The transport is scripted; the judgement is not:
 
-1. **A script drives the real conversation.** `scripts/dialog-check.mjs` authenticates against the running `dsh web` origin, creates a fresh Session, sends one ordinary user prompt, waits for the turn to settle, and prints the driving Session's transcript plus any Session the run created. It asserts nothing.
+1. Drive a real conversation with the script:
 
    ```bash
    DSH_TOKEN=<token from the `dsh web:` line> node scripts/dialog-check.mjs "<prompt>"
    ```
 
-   The prompt must be a user-level goal with no parameter hints, so the run measures what an agent can work out from the tool description alone. Driving it by script is what makes the pass repeatable, and it goes through DSH rather than calling the plugin's Host methods directly: only the conversation crosses the model-facing surface.
-2. **The reply is parsed, not asserted.** A reply is not deterministic, so no fixed expectation is encoded. An agent reads the printed transcript and decides whether the subagent actually started, whether it executed, and whether it is healthy.
+   `scripts/dialog-check.mjs` authenticates against the running `dsh web` origin, creates a fresh Session, sends one ordinary user prompt, waits for the turn to settle, and prints the driving Session's transcript plus any Session the run created. It asserts nothing. `DSH_BASE`, `DSH_CWD`, `DSH_HOME` and `DSH_TIMEOUT_MS` override its defaults.
+2. Use a user-level goal with no parameter hints, so the run measures what an agent can work out from the tool description alone.
+3. Read the printed transcript and judge the **reply**, not whether the call returned.
 
-The flow to drive, and what to judge:
+Checklist for the delegation path:
 
-1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` is bound to `gpt-6-luna` at medium effort and edits no source, so the pass stays cheap. The result must carry `reply: null` with a note saying where the reply will arrive; a bare handle is the defect that field replaced.
-2. Confirm **one** notice settles the child, and that it is the runtime's own — the workflow plugin contributes none, so two notices for one settlement is a defect. It names the child and carries its closing message, or states that the child left none.
-3. Confirm the caller neither polls, sleeps, nor spends a second call waiting for the reply: it ends its turn, and the runtime's notice carries the reply into the next one. Re-reading a settled child with `{ action: "delegate", child: "<handle>" }` still returns `reply` from the durable report — the notice is a wake-up, the report is what survives one that was never delivered.
+1. Start a child with `codex_workflow { action: "delegate", role: "evidence_runner", text: "<a greeting>" }`. `evidence_runner` edits no source, so the pass stays cheap. The result must carry `reply: null` with a note saying where the reply will arrive; a bare handle is the defect that field replaced.
+2. Confirm **one** notice settles the child, and that it is the runtime's own — the workflow plugin contributes none. It names the child and carries its closing message, or states that the child left none.
+3. Confirm the caller neither polls, sleeps, nor spends a second call waiting for the reply: it ends its turn, and the notice carries the reply into the next one. Re-reading a settled child with `{ action: "delegate", child: "<handle>" }` still returns `reply` from the durable report.
 4. Send a second turn on the *same* child with the returned handle — `{ action: "delegate", child: "<handle>", text: "<a follow-up>" }` — and confirm the reply continues that conversation instead of starting another.
-5. Confirm the caller never reaches for `codex_workers` with that handle: it tracks its own workers, so its `get` refuses and its `reports` returns an empty list while ignoring the id.
+5. Confirm the caller never reaches for `codex_workers` with that handle: it tracks its own workers, so its `get` refuses and its `reports` returns an empty list.
 6. Stop the current turn with `{ action: "delegate", child: "<handle>", stop: true }` and confirm the returned child state changes.
 7. Confirm that none of the above demands `adopt` or a `generation`: delegation is the generation-free path.
 
-Judge the **reply**, not whether the call returned. A defect such as reading `task` where `text` is required, or an error that does not name the field to pass, is visible only in the transcript. Both were found this way; the ones that became assertable are covered by `test/delegate.test.mjs`.
+A defect such as reading `task` where `text` is required, or an error that does not name the field to pass, is visible only in the transcript.
 
-## Remaining validation and development work
+## Current validation status
 
-The adjacent provider's `EXECUTION.md` records isolated profile A/B creation and cold Agent resume. `evidence/workflow-contract-live-result.json` now records real T001/T002 dispatch, result recording, acceptance, integration and release, including an independent reviewer for T002. `evidence/browser-host-recovery-result.json` records provider Host cold recovery and native child/draft isolation. Provider-only and provider+workflow isolated package checks passed. Workflow profile UI, approval/interruption browser behavior and failure scenarios still require their own evidence; these bounded passes do not certify every workflow path.
+- `npm test` runs 26 test files covering configuration merging, role resolution, strategies, the gate, delegation, dispatch, handoff, storage, profile RPC, the client bundle and the dev/pack scripts. They exercise the compiled Host against a fake in-process provider and stub Host services, and do not call a model.
+- `npm run pack:check` performs an isolated Node/Cordis install check of the provider-only and provider+workflow combinations and prints `no model or browser` in its pass line.
+- Real-model validation — live dispatch, cross-provider successor continuation and the browser checks — is not part of the committed automated suite. The strategy design record [upgrade.md](upgrade.md) states that its target behaviour does not represent a validation result.
+- This repository ships no `evidence/` directory; earlier claims about recorded `evidence/*.json` runs are not verifiable here and are not repeated.
 
-`npm run pack:check` stages fresh source builds and verifies provider-only and provider+workflow tarball installs with the coordinated DSH overrides. It retains the temporary directory and prints its path. The runtime check mounts real Cordis services without calling a model; browser and real workflow delivery are separate checks.
+## License
 
-`npm run dev -- --profile <prepared-profile> --app-provider /absolute/provider-checkout` uses the prepared profile's native bundle layers and ordered `--patch` overlays. The profile resolves `dsh-codex-app-provider` to that checkout and loads it before `dsh-workflow-kit`, with an absolute provider stateDir and enabled HMR roots covering only workflow lib. `DSH_CODEX_APP_PROVIDER_CHECKOUT` supplies the checkout when the flag is omitted. Linux owner inspection reuses only the same official Host/profile and leaves a reused Host running on exit.
+MIT (`license` in `package.json`).
 
-Real-model validation of the controlled switch (Codex thread handover to a successor child, Codex → DeepSeek successor continuation) requires rebuilding and installing the coordinated DSH and provider package set first; this package's tests cover the contracts and the Host's routing with simulated adapters, and report the missing capability instead of silently running the old configuration.
+## Related repositories
 
-Both watchers publish complete staged builds atomically. Provider execution-source changes pause publication until restart; the unified provider lib is excluded from Host HMR. Client-only provider changes can rebuild the bundle for page refresh. Workflow source changes retain native HMR while its watcher also pauses after provider execution changes. No production profile is changed by these checks.
+- **`dsh-codex-app-provider`** — the sibling DSH plugin that provides the Codex execution engine, the read-only `codexExecution` facts and the `codexToolGate` capability this plugin binds. It must be loaded before `dsh-workflow-kit`. It is declared as an optional peer dependency, not bundled or shipped by this package, and this README does not link to it.
