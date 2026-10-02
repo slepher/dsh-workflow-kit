@@ -216,7 +216,7 @@ Host 只注册一个面向模型的工具：`codex_workflow`（`src/host.ts:170`
 | `npm run publish` | 在暂存目录构建后以一次 rename 替换 `lib/`，因此正在监听的 Host 不会看到写了一半的 bundle。 |
 | `npm run publish:watch` | 同上，并在 `src/` 任意变更时重新发布。 |
 
-**watcher 发布行为。** `scripts/watch.mjs`（由 `npm run dev` 使用）在 `.watch/workflow-build` 中构建并原子替换 `lib/`。它同时监听 provider 的 `src/`：provider 执行源码变更会暂停发布，直到 Host 重启；而仅 provider `client/` 的变更会被忽略，仍可为页面刷新重建（`scripts/watch.mjs:68`）。`npm run publish:watch` 以同样方式发布完整的暂存构建，只由本包的 `src/` 触发。
+**watcher 发布行为。** `scripts/watch.mjs`（由 `npm run dev` 使用）在 `.watch/publish-build` 中构建并原子替换 `lib/`。它同时监听 provider 的 `src/`：provider 的任意源码变更都会暂停发布，直到 Host 重启。`npm run publish:watch` 以同样方式发布完整的暂存构建，只由本包的 `src/` 触发。
 
 策略与提示接线的设计记录见 [upgrade.md](upgrade.md) 与 [docs/upgrade-prompts.md](docs/upgrade-prompts.md)。
 

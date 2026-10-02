@@ -14,6 +14,7 @@ function fixture(t, complete = true) {
   const base = mkdtempSync(join(tmpdir(), "workflow-watch-")), root = join(base, "workflow"), codex = join(base, "codex");
   for (const path of [join(root, "scripts"), join(root, "src/generated"), join(root, "lib/generated"), join(root, "lib/client"), join(root, "node_modules"), join(codex, "src/client")]) mkdirSync(path, { recursive: true });
   writeFileSync(join(root, "scripts/watch.mjs"), readFileSync(new URL("../scripts/watch.mjs", import.meta.url)));
+  writeFileSync(join(root, "scripts/publish.mjs"), readFileSync(new URL("../scripts/publish.mjs", import.meta.url)));
   writeFileSync(join(root, "scripts/build-skills.mjs"), ""); writeFileSync(join(root, "scripts/build-client.mjs"), ""); writeFileSync(join(root, "tsconfig.client.json"), "{}"); writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { build: "fixture" } })); writeFileSync(join(root, "tsconfig.json"), "{}");
   writeFileSync(join(root, "src/index.ts"), "w-0"); writeFileSync(join(codex, "src/backend.ts"), "core-0");
   if (complete) for (const path of ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js", "lib/client.js", "lib/client/index.d.ts"]) writeFileSync(join(root, path), "live");
@@ -28,7 +29,7 @@ writeFileSync(join(home,"build-started"),text);
 if(text.includes("FAIL")){writeFileSync(join(home,"build-done"),text);process.exit(2);}
 if(text.includes("GATE")) await new Promise(resolve=>{const timer=setInterval(()=>{if(existsSync(join(home,"release"))){clearInterval(timer);resolve();}},10)});
 if(text.includes("BLOCK")){process.on("SIGINT",()=>setTimeout(()=>process.exit(0),80));await new Promise(()=>{});}
-mkdirSync(join(cwd,"lib"),{recursive:true});writeFileSync(join(cwd,"lib/index.js"),text);writeFileSync(join(home,"build-done"),text);
+for (const file of ["lib/index.js","lib/host.js","lib/workers.js","lib/workflow.js","lib/generated/prompts.js","lib/client.js","lib/client/index.d.ts"]) { mkdirSync(join(cwd,file,".."),{recursive:true});writeFileSync(join(cwd,file),text); }writeFileSync(join(home,"build-done"),text);
 `); chmodSync(npm, 0o755);
   const env = { ...process.env, PATH: `${base}:${process.env.PATH}` }, children = [];
   t.after(async () => { for (const child of children) if (child.exitCode === null && child.signalCode === null) { child.kill("SIGINT"); await new Promise(resolve => child.once("exit", resolve)); } rmSync(base, { recursive: true, force: true }); });

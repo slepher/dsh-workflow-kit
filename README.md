@@ -216,7 +216,7 @@ All commands run from the repository root.
 | `npm run publish` | Builds in a staging directory and replaces `lib/` in one rename, so a watching Host never sees a half-written bundle. |
 | `npm run publish:watch` | Same, republishing on every change under `src/`. |
 
-**Watched-publish behaviour.** `scripts/watch.mjs` (used by `npm run dev`) builds in `.watch/workflow-build` and atomically replaces `lib/`. It also watches the provider's `src/`: a provider execution-source change pauses publication until the Host is restarted, while provider `client/`-only changes are ignored and can still rebuild for a page refresh (`scripts/watch.mjs:68`). `npm run publish:watch` publishes complete staged builds the same way, driven only by this package's `src/`.
+**Watched-publish behaviour.** `scripts/watch.mjs` (used by `npm run dev`) builds in `.watch/publish-build` and atomically replaces `lib/`. It also watches the provider's `src/`: any provider source change pauses publication until the Host is restarted. `npm run publish:watch` publishes complete staged builds the same way, driven only by this package's `src/`.
 
 Design records for the strategy and prompt wiring live in [upgrade.md](upgrade.md) and [docs/upgrade-prompts.md](docs/upgrade-prompts.md).
 

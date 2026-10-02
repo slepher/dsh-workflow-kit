@@ -309,6 +309,13 @@ test("a repository keeps one lane pool that the next goal reuses", async t => {
   assert.equal(next.lanes[0].owner, "T001-A1", "and takes ownership of it");
   assert.equal(existsSync(join(repo, "agentwork", "goalB", ".lanes")), false, "goal B also leaves nothing of its own behind");
   assert.equal(git(lane.path, "rev-parse", "HEAD"), base, "the reused worktree is reset to the new goal's input");
+  const restored = new WorkflowStore(f.store.stateDir);
+  const reopenedWorkers = new WorkflowWorkers(f.ctx, restored, f.configuration, f.workers.defaultProfile);
+  const reopened = new Workflow(reopenedWorkers);
+  assert.equal(restored.read().runs[0].lanes, restored.read().runs[1].lanes, "restart restores one shared pool");
+  const afterRestart = await reopenedWorkers.run(second, new AbortController().signal, () => reopened.execute("parent2", { action: "status" }));
+  assert.deepEqual(afterRestart.lanes, next.lanes);
+  assert.equal(afterRestart.tasks[0].workerId, next.tasks[0].workerId, "restart keeps the existing assignment");
 });
 
 /**

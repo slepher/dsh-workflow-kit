@@ -41,93 +41,13 @@ export interface ChildExecutionInputs {
 /** Child creation options plus the execution field the core preserves by spread. */
 export type ChildAgentOptions = AgentOptions & { execution?: ChildExecutionInputs };
 
-/**
- * Trusted-Host thread handover, as the Codex provider publishes it on
- * `ctx.codexHandoff`.
- *
- * Declared structurally on purpose: this plugin must load and build against a
- * provider package that predates the capability, and then report the missing
- * route instead of silently running the old configuration.
- */
-export interface ThreadHandoffRequest {
-  /** Host request identity; a repeated request reuses its recorded handover. */
-  requestId: string;
-  /** DSH Session whose native thread is handed over. */
-  fromSessionId: string;
-  /** Reserved successor DSH Session that continues it. */
-  toSessionId: string;
-  /** Target model and effort the successor runs on. */
-  model: string;
-  reasoningEffort?: string;
-  /** Full execution inputs the successor's first request will carry. */
-  developerInstructions?: string;
-  boundary?: { cwd: string; writableRoots: readonly string[]; network: "disabled" | "loopback" };
-}
-
-/** The recorded outcome of one native thread handover. */
-export interface ThreadHandoffResult {
-  toSessionId: string;
-  threadId: string;
-  state: string;
-}
-
-/** Read-only native thread ownership for Host reconciliation. */
-export interface ThreadOwnership {
-  sessionId: string;
-  threadId?: string;
-  handedOffTo?: string;
-  handoffFrom?: string;
-}
-
-export interface ThreadHandoffService {
-  handoff(request: ThreadHandoffRequest): Promise<ThreadHandoffResult>;
-  read?(nativeSessionId: string): Promise<ThreadOwnership | undefined>;
-}
-
-/**
- * The provider's workflow gate surface, as published on `ctx.codexToolGate`.
- *
- * Declared structurally for the same reason as the thread handover above: this
- * plugin has to load and build against a provider package that predates the
- * capability, and then refuse a Codex child it cannot gate rather than run it
- * unchecked. The shapes are the provider's `GateBinding`/`GateEvent`/`GateDecision`.
- */
-export interface GateBinding {
-  /** Host business label; the provider never enumerates or interprets it. */
-  role: string;
-  /** The registered handler this Session's operations are checked by. */
-  hook: string;
-  /** Host-owned JSON arguments describing the Session's authorization. */
-  args: Record<string, unknown>;
-}
-
-/** One operation about to execute, from either entry point. */
-export interface GateEvent {
-  source: "dsh" | "codex";
-  /** DSH Session identity, resolved by the Host; never taken from a payload. */
-  sessionId: string;
-  callId: string;
-  /** Trusted Session/operation working directory. */
-  cwd: string;
-  toolName: string;
-  /** The complete original tool arguments, preserved for the handler. */
-  toolArgs: unknown;
-}
-
-export type GateDecision =
-  | { kind: "allow" }
-  | { kind: "deny"; reason: string };
-
-export type GateHandler = (
-  binding: Readonly<GateBinding>,
-  event: Readonly<GateEvent>,
-) => GateDecision;
-
-/** The Host-facing gate capability the Codex provider publishes. */
-export interface CodexToolGate {
-  register(hook: string, handler: GateHandler): () => void;
-  bind(sessionId: string, binding: GateBinding): void;
-}
+export type {
+  CodexThreadHandoffRequest as ThreadHandoffRequest,
+  CodexThreadHandoffResult as ThreadHandoffResult,
+  CodexThreadOwnership as ThreadOwnership,
+  CodexThreadHandoffService as ThreadHandoffService,
+  CodexToolGate, GateBinding, GateDecision, GateEvent, GateHandler,
+} from "dsh-codex-app-provider";
 
 export interface WorkflowState {
   runs: unknown[];

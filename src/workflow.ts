@@ -143,7 +143,7 @@ type Lane = { name: string; path: string; owner?: string }
  * and the workflow action that already exists to move it.
  */
 type PendingDisposition = { task?: string; attempt?: number; lane?: string; child?: string; state: string; next: string }
-type Run = { planSnapshot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
+export type Run = { planSnapshot?: string; laneRoot?: string; id: string; parent: string; plan: Plan; lanes: Lane[]; attempts: Attempt[] }
 export type WorkflowAction = { action: string; generation?: string; task?: string; attempt?: number; lane?: string; base?: string; result?: string; text?: string; recipient?: string; processesStopped?: boolean;
   role?: string; child?: string; stop?: boolean; cwd?: string; name?: string; writes?: readonly string[]; network?: 'disabled' | 'loopback' }
 
@@ -158,14 +158,6 @@ export class Workflow {
     this.directory = workers.store.stateDir
     mkdirSync(this.directory, {recursive:true, mode:0o700})
     this.runs = workers.store.read().runs as Run[]
-    for (const run of this.runs) {
-      if (run.planSnapshot) {
-        const snapshot:Plan=JSON.parse(readFileSync(run.planSnapshot,'utf8'))
-        run.plan.text=snapshot.text
-        for(const task of Object.values(run.plan.tasks)) task.text=snapshot.tasks[task.id].text
-      }
-      for(const attempt of run.attempts) attempt.task.text??=readFileSync(attempt.contract,'utf8')
-    }
     const pools=new Map<string,Lane[]>()
     for (const run of this.runs) {
       const root=laneRoot(run),pool=pools.get(root)

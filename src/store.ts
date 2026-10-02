@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { readGateArgs } from "./gate.js";
+import type { Run } from "./workflow.js";
 import type { WorkflowState } from "./types.js";
 
 export class WorkflowStore {
@@ -11,11 +12,14 @@ export class WorkflowStore {
     if (!isAbsolute(stateDir)) throw new Error("stateDir must be absolute");
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     this.file = join(stateDir, "orchestration.json");
-    try { this.state = parse(readFileSync(this.file, "utf8")); }
+    let text: string;
+    try { text = readFileSync(this.file, "utf8"); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       this.state = { runs: [], lanes: [] };
+      return;
     }
+    this.state = parse(text);
   }
 
   read(): WorkflowState { return this.state; }
@@ -68,7 +72,14 @@ export class WorkflowStore {
 
   private write(state: WorkflowState): void {
     const temp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    // Keep immutable plans and contract text in their retained files. The top-level
+    // lane table is authoritative; runs reference their pool by directory.
+    const runs = (state.runs as Run[]).map(run => run.planSnapshot === undefined ? run : {
+      ...run, plan: undefined, laneRoot: run.lanes[0] === undefined
+        ? join(run.plan.repository, "agentwork", ".lanes") : dirname(run.lanes[0].path), lanes: undefined,
+      attempts: run.attempts.map(attempt => ({ ...attempt, task: { ...attempt.task, text: undefined } })),
+    });
+    writeFileSync(temp, `${JSON.stringify({ ...state, runs }, null, 2)}\n`, { mode: 0o600 });
     renameSync(temp, this.file);
   }
 }
@@ -109,6 +120,14 @@ function parse(text: string): WorkflowState {
       return typeof entry?.provider === "string" && typeof entry.model === "string" && typeof entry.reasoningEffort === "string";
     })) throw new Error(`Invalid native child coding snapshot: ${id}`);
     if (record.gate !== undefined && !validGate(record.gate)) throw new Error(`Invalid native child gate binding: ${id}`);
+  }
+  for (const run of value.runs as Run[]) {
+    if (run.planSnapshot !== undefined) run.plan = JSON.parse(readFileSync(run.planSnapshot, "utf8"));
+    if (run.lanes === undefined && run.planSnapshot !== undefined) {
+      if (typeof run.laneRoot !== "string" || !isAbsolute(run.laneRoot)) throw new Error("Invalid workflow lane pool reference");
+      run.lanes = value.lanes.filter(lane => dirname(lane.path) === run.laneRoot) as Run["lanes"];
+    }
+    for (const attempt of run.attempts ?? []) attempt.task.text ??= readFileSync(attempt.contract, "utf8");
   }
   return { runs: value.runs, lanes: value.lanes, ...(value.selectedProfiles === undefined ? {} : { selectedProfiles: value.selectedProfiles }),
     ...(value.sessionStrategies === undefined ? {} : { sessionStrategies: value.sessionStrategies }),

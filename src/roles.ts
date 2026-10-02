@@ -74,7 +74,7 @@ export function resolveRole(name: string, workflowSkillDir?: string, implementat
     : workflowSkillDir ? join(workflowSkillDir, "..", "audit-implementation-simplicity", "SKILL.md")
     : "the installed audit-implementation-simplicity skill's SKILL.md";
   const developerInstructions = [...(role.skills ?? []), ...extraSkills].map(skill => {
-    return getPromptSkill(skill).content.replaceAll("{{roleProtocolPath}}", roleProtocolPath).replaceAll("{{implementationStandardPath}}", standardPath).trim();
+    return getPromptSkill(skill).replaceAll("{{roleProtocolPath}}", roleProtocolPath).replaceAll("{{implementationStandardPath}}", standardPath).trim();
   }).join("\n\n");
   return { ...role, developerInstructions };
 }

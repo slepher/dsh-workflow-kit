@@ -60,7 +60,7 @@ try {
   };
   if (owner !== undefined) {
     assertHmr(effective);
-    host.assertBaseline(codex, ["lib/index.js", "lib/backend.js", "lib/provider.js", "lib/client.js"]);
+    host.assertBaseline(codex, ["lib/index.js", "lib/backend.js", "lib/provider.js"]);
     host.assertBaseline(root, ["lib/index.js", "lib/host.js", "lib/workers.js", "lib/workflow.js", "lib/generated/prompts.js"]);
   } else {
     const launched = host.resolveDevHost({ profile, patches: [...patches, overlay], dshHome, expectedRoots, providerCheckout: codex });
