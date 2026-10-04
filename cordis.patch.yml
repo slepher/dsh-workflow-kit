@@ -1,3 +1,13 @@
+# The bundle's own layer. It inserts this plugin's row and carries the one
+# deployment default a fresh install needs: without it a new Session has no
+# configuration to adopt, and the picker can only report "not selected".
+#
+# A profile's own patch replaces this whole `config` value rather than merging
+# keys, so a deployment that restates the block states `defaultProfile` too.
+# `skills/` beside this package is the fallback source for the role protocols;
+# it is optional content, not a requirement to mount.
 - insert:
     - id: dsh-workflow-kit
       name: dsh-workflow-kit
+      config:
+        defaultProfile: gpt-workflow

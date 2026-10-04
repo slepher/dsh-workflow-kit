@@ -21,6 +21,12 @@ test("exports the workflow boundary", () => {
   assert.equal(manifest.peerDependencies["dsh-codex-app-provider"], "0.1.1");
   assert.equal("dsh-codex-kit-backend" in manifest.devDependencies, false);
   assert.doesNotMatch(JSON.stringify(manifest) + lock, /file:\.\.\/dsh-codex-kit|\/tmp\/|\/home\//);
+  // A git install fetches this package alone, and pnpm runs `npm install` inside
+  // the fetched copy before `prepare`. Any `file:` spec that leaves the package
+  // therefore fails the whole install with `ERR_PNPM_PREPARE_PACKAGE` rather
+  // than degrading, so the provider is reached through the staged copy
+  // (`scripts/stage-provider-types.mjs`) and never through this manifest.
+  assert.doesNotMatch(JSON.stringify(manifest) + lock, /file:\s*\.\./, "no dependency spec may leave the package");
   assert.equal(JSON.parse(lock).packages["node_modules/dsh-codex-kit-backend"], undefined);
   assert.equal("dsh-codex-kit" in manifest.dependencies, false);
   assert.equal(manifest.peerDependenciesMeta.react.optional, true);

@@ -43,7 +43,15 @@ Python 3 与 Git 是运行时要求，而不只是构建要求：采纳 generati
 
 ## 安装
 
-1. **先构建并打包 provider。** `dsh-codex-app-provider` 这个 devDependency 是指向 `../dsh-codex-app-provider/dsh-codex-app-provider-0.1.1.tgz` 的本地 `file:` tarball 说明（该路径在本仓库之外，这里不做链接）。在 provider checkout 中构建并执行 `npm pack`，使该 tarball 存在。
+### 在本 checkout 中开发
+
+1. **先构建 provider。** provider 是运行时 peer，也是本包类型检查所依赖的类型来源。构建相邻 checkout（`../dsh-codex-app-provider`，或用 `DSH_CODEX_APP_PROVIDER_CHECKOUT` 指定）：
+
+   ```bash
+   cd ../dsh-codex-app-provider && npm ci && npm run build
+   ```
+
+   这里**刻意不使用** `file:` devDependency：离开本包的 `file:` 说明会让 git 安装整体失败——pnpm 会在抓取下来的副本里执行 `npm install`，那里没有相邻 checkout。`scripts/stage-provider-types.mjs` 改为把构建结果复制进本包自己的 `node_modules`，这是唯一能让 provider 的 `declare module "@deepseek-ai/cordis"` 增强与本包的 cordis 实例合并的位置；用 `paths` 或符号链接直接指向相邻 checkout，会让增强落到 provider 自己那份 cordis 上，`ctx.codexExecution` 依然不可见。
 
 2. **准备锁定依赖。**
 
@@ -51,7 +59,7 @@ Python 3 与 Git 是运行时要求，而不只是构建要求：采纳 generati
    npm run prepare:local
    ```
 
-   `scripts/prepare-local.mjs` 会检查每个 `file:` devDependency 都以 `.tgz` 结尾且确实存在，执行锁定的 `npm ci --ignore-scripts`，并在 `package.json` 或 `package-lock.json` 被改动时报错。
+   `scripts/prepare-local.mjs` 会检查每个 `file:` devDependency 都以 `.tgz` 结尾且确实存在，执行锁定的 `npm ci --ignore-scripts`，并在 `package.json` 或 `package-lock.json` 被改动时报错；随后 `scripts/stage-provider-types.mjs` 暂存 provider 的声明文件。`npm ci` 会清掉暂存副本，任何一次安装之后都要重跑本命令。
 
 3. **构建本插件。**
 
@@ -73,7 +81,26 @@ Python 3 与 Git 是运行时要求，而不只是构建要求：采纳 generati
        defaultProfile: gpt-workflow
    ```
 
-   本包自带的 bundle patch（`dsh.bundle.patch` → `cordis.patch.yml`）会插入 `dsh-workflow-kit` 条目（`id` 与 `name`），因此 profile 只需提供 `config`。
+   本包自带的 bundle patch（`dsh.bundle.patch` → `cordis.patch.yml`）会插入 `dsh-workflow-kit` 条目并带上 `defaultProfile: gpt-workflow`，因此只想要默认值的部署完全不必提供 `config`。patch 会**整体替换**一行的 `config` 值而非逐键合并，所以重新写这一段的 profile 也要一并写出 `defaultProfile`。
+
+### 给使用者的安装方式
+
+`dsh plugin add` 接受 registry 包、打包好的 tarball，或 git 地址。三者到手的东西不同：
+
+| 来源 | 到手内容 | 安装时构建 |
+| --- | --- | --- |
+| npm —— `dsh plugin add <package>` | 发布时已构建的 `lib/` | 无 |
+| tarball —— `dsh plugin add ./dsh-workflow-kit-0.1.1.tgz` | 同上 | 无 |
+| git —— `dsh plugin add github:slepher/dsh-workflow-kit#<sha>` | **只有源码** | `prepare` |
+
+git 安装会执行 `prepare`（`scripts/prepare-build.mjs`）：它转译 Host、打包客户端，**不做类型检查**——本包 `types` 字段指向的声明属于开发与发布产物，该路径不产出。该脚本自包含（不读取包外任何内容）；pnpm ≥10 在放行之前拒绝执行 git 依赖的构建脚本，因此第一次 `add` 必然失败，pnpm 会打印出要复制进 profile `pnpm-workspace.yaml` 的那一行：
+
+```yaml
+allowBuilds:
+  "dsh-workflow-kit@git+https://github.com/slepher/dsh-workflow-kit.git#<sha>": true
+```
+
+这条放行等于授权在安装期、沙箱之外执行该包的代码：请固定 commit。并先装 provider——bundle 顺序即 add 顺序，而本插件在面对不发布 `codexToolGate` 的 provider 时会拒绝挂载。
 
 配置字段（`src/host.ts:36`）：
 

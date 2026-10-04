@@ -43,7 +43,15 @@ Python 3 and Git are runtime requirements, not just build requirements: adopting
 
 ## Install
 
-1. **Build and pack the provider first.** The `dsh-codex-app-provider` devDependency is a local `file:` tarball spec pointing at `../dsh-codex-app-provider/dsh-codex-app-provider-0.1.1.tgz` (a path outside this repository; it is not linked here). Build the provider checkout and run `npm pack` there so that tarball exists.
+### Develop in this checkout
+
+1. **Build the provider first.** The provider is a runtime peer and the source of the types this package type-checks against. Build the adjacent checkout (`../dsh-codex-app-provider`, or whatever `DSH_CODEX_APP_PROVIDER_CHECKOUT` names):
+
+   ```bash
+   cd ../dsh-codex-app-provider && npm ci && npm run build
+   ```
+
+   It is deliberately **not** a `file:` devDependency here. A `file:` spec that leaves the package fails a git install outright — pnpm runs `npm install` inside the fetched copy, where no sibling checkout exists — and an adjacency it cannot resolve is worse than no adjacency at all. `scripts/stage-provider-types.mjs` copies the built result into this package's own `node_modules` instead, which is the only placement where the provider's `declare module "@deepseek-ai/cordis"` augmentation merges with this package's cordis instance; resolving the sibling directly by `paths` or symlink makes the augmentation land on the provider's own cordis copy and leaves `ctx.codexExecution` unknown.
 
 2. **Prepare locked local dependencies.**
 
@@ -51,7 +59,7 @@ Python 3 and Git are runtime requirements, not just build requirements: adopting
    npm run prepare:local
    ```
 
-   `scripts/prepare-local.mjs` verifies that every `file:` devDependency ends in `.tgz` and exists, runs locked `npm ci --ignore-scripts`, and fails if `package.json` or `package-lock.json` changed.
+   `scripts/prepare-local.mjs` verifies that every `file:` devDependency ends in `.tgz` and exists, runs locked `npm ci --ignore-scripts`, and fails if `package.json` or `package-lock.json` changed; `scripts/stage-provider-types.mjs` then stages the provider's declarations. `npm ci` prunes the staged copy, so re-run this after any install.
 
 3. **Build the plugin.**
 
@@ -73,7 +81,26 @@ Python 3 and Git are runtime requirements, not just build requirements: adopting
        defaultProfile: gpt-workflow
    ```
 
-   The package's own bundle patch (`dsh.bundle.patch` → `cordis.patch.yml`) inserts the `dsh-workflow-kit` entry (`id` and `name`), so the profile only supplies the `config` block.
+   The package's own bundle patch (`dsh.bundle.patch` → `cordis.patch.yml`) inserts the `dsh-workflow-kit` entry and carries `defaultProfile: gpt-workflow`, so a deployment that wants only the defaults supplies no `config` at all. A patch replaces a row's whole `config` value rather than merging keys, so a profile that restates the block states `defaultProfile` too.
+
+### Install for users
+
+`dsh plugin add` accepts a registry package, a packed tarball, or a git host. What arrives differs:
+
+| Source | What arrives | Build on install |
+| --- | --- | --- |
+| npm — `dsh plugin add <package>` | `lib/` built at publish time | none |
+| tarball — `dsh plugin add ./dsh-workflow-kit-0.1.1.tgz` | the same | none |
+| git — `dsh plugin add github:slepher/dsh-workflow-kit#<sha>` | **sources only** | `prepare` |
+
+A git install runs `prepare` (`scripts/prepare-build.mjs`), which transpiles the Host half and bundles the client **without a type checker**: the declarations this package's `types` field names are a development and publishing artifact and are not emitted on that path. It is self-contained — it reads nothing outside the fetched package — and pnpm ≥10 refuses to run it until the exact spec is allowed, so the first `add` fails and pnpm prints the line to copy into the profile's `pnpm-workspace.yaml`:
+
+```yaml
+allowBuilds:
+  "dsh-workflow-kit@git+https://github.com/slepher/dsh-workflow-kit.git#<sha>": true
+```
+
+Treat that allowance as permission to execute the package's code on the machine at install time, outside any sandbox: pin the commit. Install the provider first — bundle order is add order, and this plugin refuses to mount against a provider that publishes no `codexToolGate`.
 
 Configuration fields (`src/host.ts:36`):
 
