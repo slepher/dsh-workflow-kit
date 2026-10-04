@@ -29,16 +29,30 @@ function strategyView(catalog: WorkflowConfiguration, store: WorkflowStore, sess
   return { preference: selected, default: fallback, effective: binding.effective, sameModel: binding.sameModel, fixed: binding.sameModel };
 }
 
-/** HTTP carrier facts this channel reads; the Web server's `node:http` request satisfies it structurally. */
+/**
+ * HTTP carrier facts this channel reads; the Web server's `node:http` request
+ * satisfies it structurally.
+ *
+ * The carrier request's own `signal` is deliberately NOT part of this face.
+ * `WebRoute['handler']` receives a `node:http` `IncomingMessage`, whose `signal`
+ * (present from Node 24.14) reports that message's own lifetime — it is not a
+ * token this channel may use for one of its operations. On the desktop runtime
+ * it is already aborted by the time the buffered body has been consumed, so
+ * reading it rejected every call with `This operation was aborted`. This channel
+ * owns the controller it hands to `dispatch` instead, exactly as the reference
+ * Connection bridge does.
+ */
 interface RpcRequest extends ConnectionTrustRequest {
   readonly url?: string | undefined;
   readonly method?: string | undefined;
-  readonly signal?: AbortSignal | undefined;
   [Symbol.asyncIterator](): AsyncIterator<Buffer | string>;
 }
 
 /** HTTP carrier the Web server hands a route; `node:http` `ServerResponse` satisfies it structurally. */
 interface RpcResponse {
+  readonly writableEnded?: boolean | undefined;
+  /** The response lifetime this channel binds its cancellation to. */
+  on(event: "close", listener: () => void): unknown;
   writeHead(status: number, headers?: Readonly<Record<string, string>>): unknown;
   end(body?: string): unknown;
 }
@@ -161,7 +175,13 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
             error: { code: "workflow/rejected", message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`, details: {} } });
           return;
         }
-        envelope(res, 200, message.rpcId, await dispatch(endpoint, message.payload, req.signal ?? new AbortController().signal));
+        // Cancellation is this channel's own, bound to the response closing
+        // before it was written — the reference Connection bridge's rule. The
+        // operation is a buffered read, so an early close is the only signal
+        // worth honouring.
+        const abort = new AbortController();
+        res.on("close", () => { if (res.writableEnded !== true) abort.abort(); });
+        envelope(res, 200, message.rpcId, await dispatch(endpoint, message.payload, abort.signal));
       },
     }), `dsh-workflow-kit: ${CHANNEL} rpc channel`);
   });

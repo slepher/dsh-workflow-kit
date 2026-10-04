@@ -61,9 +61,12 @@ async function host(t, stored) {
     const body = JSON.stringify({ type: "client-request", rpcId: "test", method, payload });
     const captured = { body: "" };
     await webServer.route.handler(
-      { method: "POST", url: `/workflow/${method}`, headers: { "content-type": "application/json", host: "127.0.0.1:3080" }, signal: undefined,
+      // A server `IncomingMessage` carries its own `signal` from Node 24.14, and
+      // on the real carrier it is already aborted once the body has been
+      // consumed; the channel owns its cancellation instead of reading it.
+      { method: "POST", url: `/workflow/${method}`, headers: { "content-type": "application/json", host: "127.0.0.1:3080" }, signal: AbortSignal.abort(),
         async *[Symbol.asyncIterator]() { yield Buffer.from(body); } },
-      { writeHead() {}, end(value) { captured.body = value ?? ""; } });
+      { writableEnded: false, on() { return this; }, writeHead() {}, end(value) { captured.body = value ?? ""; this.writableEnded = true; } });
     return JSON.parse(captured.body).result;
   };
   return { ctx, call };

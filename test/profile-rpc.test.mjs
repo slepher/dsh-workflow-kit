@@ -52,13 +52,27 @@ async function harness(f) {
 function request(body, { method = "POST", url, headers = { "content-type": "application/json", host: "127.0.0.1:3080" } } = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
   const target = url ?? `/workflow/${typeof body === "object" && body !== null ? String(body.method) : "profiles"}`;
-  return { method, url: target, headers, signal: undefined,
+  // A server `IncomingMessage` carries its own `signal` from Node 24.14, and on
+  // this carrier that signal is already aborted by the time the buffered body
+  // has been consumed. The channel must not read it: doing so rejected every
+  // call with `This operation was aborted`.
+  return { method, url: target, headers, signal: AbortSignal.abort(),
     async *[Symbol.asyncIterator]() { yield Buffer.from(text); } };
 }
-/** Capture one node:http-shaped response. */
+/** Capture one node:http-shaped response, including its close event. */
 function response() {
   const captured = { status: undefined, headers: undefined, body: "" };
-  return { captured, writeHead(status, headers) { captured.status = status; captured.headers = headers; }, end(body) { captured.body = body ?? ""; } };
+  const listeners = [];
+  const res = {
+    captured,
+    writableEnded: false,
+    on(event, listener) { if (event === "close") listeners.push(listener); return this; },
+    writeHead(status, headers) { captured.status = status; captured.headers = headers; },
+    end(body) { captured.body = body ?? ""; res.writableEnded = true; },
+    /** Close the response before it was written, as a disconnected caller does. */
+    closeEarly() { for (const listener of listeners) listener(); },
+  };
+  return res;
 }
 const call = (route, body, options) => {
   const res = response();
@@ -146,6 +160,26 @@ test("workflow profile channel keeps connection carrier semantics", async t => {
   assert.ok(forbidden.status === 401 || forbidden.status === 403, `untrusted host rejected, got ${forbidden.status}`);
 });
 
+test("an aborted carrier request signal never cancels a channel operation", async t => {
+  const f = fixture(t);
+  f.parent.session.header.id = "parent";
+  const { route } = await harness(f);
+
+  // Node 24.14+ gives a server IncomingMessage its own `signal`, and this
+  // carrier hands it over already aborted once the buffered body has been
+  // consumed. That signal is the message's own lifetime, not this channel's
+  // cancellation, so the request is still served.
+  const answered = await call(route, envelope("configurations", {}));
+  assert.equal(answered.json.result.ok, true);
+  assert.equal(answered.json.result.value.configs.length, 2);
+
+  // The endpoint's own validation still reports its own error, proving the
+  // carrier signal aborted nothing before the operation ran.
+  const mismatched = await call(route, envelope("configurations", {}), { url: "/workflow/nope" });
+  assert.equal(mismatched.json.result.ok, false);
+  assert.match(mismatched.json.result.error.message, /does not match endpoint/);
+});
+
 test("profile selections retain submission order across asynchronous Session validation", async t => {
   const f = fixture(t);
   let handler, release;
@@ -153,14 +187,14 @@ test("profile selections retain submission order across asynchronous Session val
   const ctx = { sessions: new Map(), inject(_services, apply) { apply(this); }, effect(register) { return register(); },
     get() { return { async stat(id) { await gate; return { header: { id } }; } }; },
     connection: { requestRejection() { return undefined; } },
-    webServer: { register(route) { handler = (endpoint, payload, signal) => route.handler(
-      { method: "POST", url: `/workflow/${endpoint}`, headers: { "content-type": "application/json", host: "127.0.0.1:3080" }, signal,
+    webServer: { register(route) { handler = (endpoint, payload) => route.handler(
+      { method: "POST", url: `/workflow/${endpoint}`, headers: { "content-type": "application/json", host: "127.0.0.1:3080" }, signal: AbortSignal.abort(),
         async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(envelope(endpoint, payload))) } },
-      { writeHead() {}, end() {} }); return () => {}; } },
+      response()); return () => {}; } },
   };
   installProfileRpc(ctx, f.configuration, f.store, () => "a");
-  const first = handler("select-profile", { sessionId: "cold", profileId: "b" }, new AbortController().signal);
-  const second = handler("select-profile", { sessionId: "cold", profileId: "a" }, new AbortController().signal);
+  const first = handler("select-profile", { sessionId: "cold", profileId: "b" });
+  const second = handler("select-profile", { sessionId: "cold", profileId: "a" });
   release();
   await Promise.all([first, second]);
   assert.equal(f.store.selectedProfile("cold"), "a");
