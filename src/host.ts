@@ -1,6 +1,8 @@
 import type { Context, Volatile } from "@deepseek-ai/cordis";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
@@ -90,6 +92,53 @@ function defaultStateDir(ctx: Context): string {
 }
 
 /**
+ * The skills this package ships beside its own `lib/`, when it carries them.
+ *
+ * Resolved from this module rather than the process working directory, so a
+ * package installed by any route — link, tarball, registry, or git — finds its
+ * own content instead of depending on where `dsh` was started.
+ */
+const SHIPPED_SKILLS = new URL("../skills/", import.meta.url);
+
+/**
+ * One skill directory shipped inside this package.
+ * @param name - the directory name under the package's `skills/`.
+ * @returns the absolute directory when it exists, otherwise `undefined`.
+ */
+function shippedSkillDir(name: string): string | undefined {
+  const directory = fileURLToPath(new URL(name, SHIPPED_SKILLS));
+  return existsSync(directory) ? directory : undefined;
+}
+
+/**
+ * Report the role protocols this deployment cannot read.
+ *
+ * An absent or half-filled skill directory degrades every dispatched child
+ * silently: `codex_workflow` keeps answering normally, while each child is told
+ * to read a protocol file nobody can open. Mount is the one moment the Host can
+ * say so once, naming the exact locations, instead of leaving each worker to
+ * discover it on its own.
+ * @param ctx - the Host context carrying the logger.
+ * @param workflowSkillDir - the resolved workflow skill directory, if any.
+ * @param implementationStandardDir - the resolved implementation standard directory, if any.
+ */
+function warnUnreadableSkills(ctx: Context, workflowSkillDir: string | undefined, implementationStandardDir: string | undefined): void {
+  const protocols = ROLES.map(role => workflowSkillDir === undefined
+    ? `references/roles/${role.protocol}`
+    : join(workflowSkillDir, "references", "roles", role.protocol));
+  const unreadable = workflowSkillDir === undefined ? [...protocols] : protocols.filter(path => !existsSync(path));
+  const standard = implementationStandardDir === undefined ? "SKILL.md" : join(implementationStandardDir, "SKILL.md");
+  if (implementationStandardDir === undefined || !existsSync(standard)) unreadable.push(standard);
+  if (unreadable.length === 0) return;
+  ctx.logger("dsh-workflow-kit").warn(
+    `${unreadable.length} role protocol file(s) are unreadable, so every dispatched child would be told to read a file that does not exist. `
+    + `workflowSkillDir=${workflowSkillDir ?? "(unset, and this package ships no skills/codex-workflow)"}; `
+    + `implementationStandardDir=${implementationStandardDir ?? "(unset, and this package ships no skills/audit-implementation-simplicity)"}. `
+    + `Missing: ${unreadable.join(", ")}`,
+  );
+}
+
+/**
  * The DSH-native half of the session gate.
  *
  * It runs as a monotonic guard after every extensible `tools/pre-execute`
@@ -133,11 +182,18 @@ export function apply(ctx: Context, config?: Config): void {
   // The configuration form is this plugin's own page, so the settings service
   // must not also generate one from the schema.
   ctx.inject(["settings"], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)); });
+  // A deployment either installs the workflow skill and names it in the entry
+  // config, or relies on the copy this package ships beside its own `lib/`. The
+  // pair is reported once when neither is readable: a missing protocol degrades
+  // every dispatched child without failing anything here.
+  const workflowSkillDir = entry.workflowSkillDir ?? shippedSkillDir("codex-workflow");
+  const implementationStandardDir = entry.implementationStandardDir ?? shippedSkillDir("audit-implementation-simplicity");
+  warnUnreadableSkills(ctx, workflowSkillDir, implementationStandardDir);
   // Built-in configurations are package content; the entry config above carries
   // the only per-deployment state.
   const catalog = new WorkflowConfiguration(
     loadBuiltinProfiles(),
-    roleInstructions(entry.workflowSkillDir, entry.implementationStandardDir),
+    roleInstructions(workflowSkillDir, implementationStandardDir),
   );
   const store = new WorkflowStore(stateDir);
   // The user's stored choice wins; the entry config is the deployment fallback
@@ -157,8 +213,8 @@ export function apply(ctx: Context, config?: Config): void {
   syncStored();
   ctx.on("loader/volatile-update", () => { syncStored(); });
   installProfileRpc(ctx, catalog, store, defaultProfile);
-  const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, entry.workflowSkillDir, entry.implementationStandardDir);
-  const workflow = new Workflow(consumer, entry.workflowSkillDir);
+  const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, workflowSkillDir, implementationStandardDir);
+  const workflow = new Workflow(consumer, workflowSkillDir);
   // The gate is installed before any session can be started: the one business
   // handler is registered with the provider first, then the DSH-native guard.
   // Both entry points call the same function, and neither calls a model.
