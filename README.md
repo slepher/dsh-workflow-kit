@@ -100,7 +100,7 @@ allowBuilds:
   "dsh-workflow-kit@git+https://github.com/slepher/dsh-workflow-kit.git#<sha>": true
 ```
 
-Treat that allowance as permission to execute the package's code on the machine at install time, outside any sandbox: pin the commit. Install the provider first — bundle order is add order, and this plugin refuses to mount against a provider that publishes no `codexToolGate`.
+Treat that allowance as permission to execute the package's code on the machine at install time, outside any sandbox: pin the commit. The allowance is bound to the **exact commit**, so a later update needs its own line — see [docs/DEFECTS.md](docs/DEFECTS.md) D4 for why, and for the routes that avoid the allowance entirely. Install the provider first — bundle order is add order, and this plugin refuses to mount against a provider that publishes no `codexToolGate`.
 
 Configuration fields (`src/host.ts:36`):
 

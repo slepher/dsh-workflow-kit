@@ -100,7 +100,7 @@ allowBuilds:
   "dsh-workflow-kit@git+https://github.com/slepher/dsh-workflow-kit.git#<sha>": true
 ```
 
-这条放行等于授权在安装期、沙箱之外执行该包的代码：请固定 commit。并先装 provider——bundle 顺序即 add 顺序，而本插件在面对不发布 `codexToolGate` 的 provider 时会拒绝挂载。
+这条放行等于授权在安装期、沙箱之外执行该包的代码：请固定 commit。放行绑定在**具体提交**上，因此日后升级到新提交要再写一行——原因与"完全不必放行"的两条路线见 [docs/DEFECTS.md](docs/DEFECTS.md) D4。并先装 provider——bundle 顺序即 add 顺序，而本插件在面对不发布 `codexToolGate` 的 provider 时会拒绝挂载。
 
 配置字段（`src/host.ts:36`）：
 

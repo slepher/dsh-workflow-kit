@@ -198,3 +198,73 @@ pnpm 在执行 `prepare` 之前，会先在抓取下来的 git 副本里跑一�
   （不含 `lib/`、`node_modules/`），在其中执行 `prepare` → 产出 18 个模块全部通过 `node --check`，
   `lib/index.js` 与 `lib/client.js` 均在位，模块图未被内联破坏。唯一相对本地构建缺的是
   `lib/client/*` 中间产物与 `.d.ts` 声明文件。
+
+**后续**：D3 的修复让 git 安装**能装**，但把 `allowBuilds` 的成本留给了使用者——见 D4。
+
+---
+
+## D4 — git 直装路线的用户侧成本：`allowBuilds` 放行绑定 commit，每次升级重来（未决）
+
+| 项 | 值 |
+| --- | --- |
+| 日期 | 2026-10-04 |
+| 状态 | **未决**：需要决定分发路线（npm / tarball / `lib/` 入库 / 维持现状） |
+| 严重度 | 中高：不影响本机自用（走 `link:`），但决定从 git 安装的人的每一次安装与升级 |
+
+### 现象
+
+使用者执行 `dsh plugin add github:…` 时：第一次必然失败（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），
+必须把 pnpm 打印的那一行抄进 profile 的 `pnpm-workspace.yaml` 再重试；**而升级到新提交时，旧键失效，
+要再抄一次新的**。
+
+### 分层根因
+
+1. **pnpm 侧（行为本身）**：`allowBuilds` 从不按**裸包名**授权 git 托管依赖——这是安全公告
+   GHSA-5wx6-mg75-v57r 之后的刻意设计。pnpm 11.11（PR #12856）起允许**不带 commit 的规范仓库键**，
+   但只匹配克隆形态 `name@git+…`；codeload 归档形态（`github:`、`https://github.com/…`）由
+   PR #12985 补齐（2026-07-30 合并）。**即使在这之后，键仍绑定 commit**：换提交就是换键。
+2. **DSH 侧（内置版本与流程）**：Desktop `0.2.0-rc.2` 内置 pnpm **11.7.0**，早于 11.11 与 #12985，
+   因此本机只认 commit-pinned 键。插件管理器的 `pendingBuilds` / `approvedBuilds` 读的是 pnpm 写下的
+   **占位值**（`"set this to true or false"`），而 git 依赖被拒时 pnpm **什么都不写**（本机实测：
+   既不建 `pnpm-workspace.yaml` 也不留占位值），所以那条顺畅的批准流程在 git 路径上根本不会触发。
+3. **本仓库侧（我们的选择）**：D3 的修复选了「`prepare` + `lib/` 不入库」，于是把上面两条的成本
+   转嫁给了使用者。官方文档在"不想让用户放行"时只列了两条路：**发 npm** 或 **发 tarball**——
+   "提交 `lib/` 进 git 仓库"不在其中（它是等价的社区变体，见下）。
+
+### 证据
+
+| 事实 | 来源 |
+| --- | --- |
+| 裸包名、稳定克隆键、旧 commit pin 三种形态**都不放行**；只有"本次要拉的 commit pin"放行 | 本机 pnpm 11.7.0 实测；[dsh-market PR #772](https://github.com/dsh-market/dsh-market/pull/772)、[PR #783](https://github.com/dsh-market/dsh-market/pull/783) 在**同一版本**上独立测出同一张表 |
+| git 依赖被拒时 pnpm 不写占位值 | 本机实测（无 `allowBuilds` 时安装失败，且未生成 `pnpm-workspace.yaml`） |
+| 键绑定 commit，升级即失效 | 本机双提交 remote 实测；[dsh-market #784](https://github.com/dsh-market/dsh-market/issues/784)（Desktop 0.2.0-rc.2 / pnpm 11.7.0 实证） |
+| Desktop 内置 pnpm 11.7.0 | 本机 `runtime.json`、10-04 安装日志（`using pnpm v11.7.0`）；[dsh-market PR #790](https://github.com/dsh-market/dsh-market/pull/790) 独立确认 |
+| 键**形态**问题在 pnpm 11.21+ 已修，但**逐版本键值缺失**升级也救不了 | [dsh-market #784](https://github.com/dsh-market/dsh-market/issues/784) 明确区分这两类问题 |
+| 官方文档免放行的两条路是 npm 与 tarball | [Package and install](https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/publish.md) |
+| DSH 侧遗留：(a) 占位符单引号 + 提示文案，文档未说明；(b) 只要参数像 git 规格且 pnpm 非零退出就打印 allowBuilds 提示，**包括纯网络失败** | [Discussion #3699](https://github.com/deepseek-ai/deepseek-harness/discussions/3699)（open）、[Discussion #4702](https://github.com/deepseek-ai/deepseek-harness/discussions/4702)（open，指向 `apps/cli/src/plugin.ts`） |
+| 上游 pnpm 已修 codeload 形态 | [pnpm#13429](https://github.com/pnpm/pnpm/issues/13429)（2026-07-27 提，07-30 关闭）、[pnpm#12985](https://github.com/pnpm/pnpm/pull/12985)（2026-07-30 合并） |
+| 社区在 Desktop 世代的做法：**dist 入库 + 删 `prepare`** | [dsh-smart-download PR #15](https://github.com/LeiSureYu/dsh-smart-download/pull/15)（2026-10-01 合并；作者在 pnpm 11.7.0 上实测：带 `prepare` 报错、删掉即 EXIT=0，且 `files` 仍生效） |
+| 社区插件索引给作者的推荐项第一条是**发 npm** | [awesome-dsh-plugin PR #6558](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6558)（2026-10-04） |
+
+### 影响
+
+- 本机自用不受影响（desktop profile 走 `link:`，不经过 pnpm 的 git 路径）。
+- 从 git 安装的人：首次安装失败一次，**每次升级再失败一次**。
+- 只有 `dsh plugin add` 直连时才需要手改 YAML；经插件市场/管理器安装的，会由它代写键
+  （[#772](https://github.com/dsh-market/dsh-market/pull/772)、[#783](https://github.com/dsh-market/dsh-market/pull/783) 修的正是这个按钮）。
+
+### 可选处置
+
+| 方案 | 用户侧 | 代价 |
+| --- | --- | --- |
+| **发 npm**（官方文档明确列出的第一条） | 零放行、零升级摩擦 | 需发布流程；`files` 已含 `lib`，改动最小 |
+| 发 tarball（官方列出的第二条） | 零放行 | 需分发 tarball；无包名依赖 |
+| **`lib/` 入库 + 删 `prepare`**（社区惯例，非官方列出） | git 直装零放行 | 要推翻本仓库两条纪律：`.gitignore` 排除 `lib/`、`publish.mjs` 原子替换 `lib/` |
+| 维持现状 | 每次安装/升级各放行一次 | 无 |
+
+### 更正记录（本档案此前两次表述不准）
+
+1. 曾把"Desktop 内置 11.7.0 早于修复"当作完整原因。实际上它只解释**键形态**；
+   **逐版本键值缺失**是另一类问题，升级 pnpm 不解决。
+2. 曾说"用户必须手改 YAML"。更准确：只有 `dsh plugin add` 直连的用户手改；
+   经市场/管理器安装时由它写键（那正是 #772/#783 在修的东西）。
