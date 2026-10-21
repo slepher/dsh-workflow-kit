@@ -140,13 +140,13 @@ Shipped profiles (package content, not user configuration):
 
 These shipped key defaults are also what an unknown or missing configuration falls back to (`src/roles.ts:44`). The older `gpt-6-sol` id is no longer a shipped default anywhere; a deployment that still wants it must state it explicitly in its own Profile or stored override.
 
-**Settings page and composer picker.** The Workflow settings page (`settings.section`, id `workflow`) edits the stored layer as path mutations: per-key provider/model/effort editors, plus copy, rename, delete, reset and set-default actions. Built-in configurations are editable in place through sparse overrides and can be reset whole; a copy is an ordinary user configuration that can be renamed or deleted. The `manager` row is listed but not editable — the manager runs on the composer's model. The composer picker (`conversation.input.left`, id `workflow-config`) only *selects* a configuration and a Session coding strategy; it re-reads the catalog whenever it opens, and both chips are hidden in a subagent Session, whose profile and strategy were already fixed by the delegation that started it.
+**Settings page and composer picker.** The Workflow settings page (`settings.section`, id `workflow`) edits the stored layer as path mutations: per-key provider/model/effort editors, plus copy, rename, delete, reset and set-default actions. Built-in configurations are editable in place through sparse overrides and can be reset whole; a copy is an ordinary user configuration that can be renamed or deleted. The `manager` row is listed but not editable — the manager runs on the composer's model. The composer picker (`conversation.input.left`, id `workflow-config`) only *selects* a configuration; the coding strategy is a settings value with no composer control. It re-reads the catalog whenever it opens, and the chip is hidden in a subagent Session, whose profile was already fixed by the delegation that started it.
 
 ## Strategies
 
 A strategy is not a permission level. It decides which Profile model configuration a coding execution runs on, whether that execution may hand off or ask for bounded expert consultation, and which phase prompt the Host binds. The execution role stays `coding_worker` throughout.
 
-Four strategies are selectable — `economy`, `adaptive`, `bootstrap`, `expert` (`src/constants.ts:27`). The stored coding default is `adaptive`; the stored integrate default is `economy`. Both are written to separate settings paths, so one change never rewrites the other. Coding has a per-Session override in the composer; integration has no Session scope and always uses the stored integrate setting (`src/store.ts:48`, `src/profile-rpc.ts:108`).
+Four strategies are selectable — `economy`, `adaptive`, `bootstrap`, `expert` (`src/constants.ts:27`). The stored coding default is `adaptive`; the stored integrate default is `economy`. Both are written to separate settings paths, so one change never rewrites the other. Both are settings-only: the composer carries no per-Session coding override, so every dispatch reads the stored coding value, and integration has no Session scope at all (`src/configuration.ts:136`).
 
 | Requested strategy | Phase | Model configuration | Handoff | Consultation | Bound phase prompt |
 | --- | --- | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ Four strategies are selectable — `economy`, `adaptive`, `bootstrap`, `expert` 
 
 (source: `bindCodingStrategy`, `src/strategy.ts:69`)
 
-**Derived `independent`.** When a Profile's `sup_coding_worker` and `def_coding_worker` resolve to the same provider and model, both selectable strategies are inert: the effective strategy is `independent`, def runs the whole assignment, no handoff or consultation is authorized, and the composer hides the strategy control. Effort is deliberately ignored in that comparison, and the stored preference is retained so it takes effect again under a Profile with different models (`src/strategy.ts:31`, `src/client/ConfigPicker.tsx:122`). This is a configuration-derived behaviour, not a fifth selectable strategy.
+**Derived `independent`.** When a Profile's `sup_coding_worker` and `def_coding_worker` resolve to the same provider and model, both selectable strategies are inert: the effective strategy is `independent`, def runs the whole assignment, and no handoff or consultation is authorized. Effort is deliberately ignored in that comparison, and the stored coding setting remains the requested strategy, so it takes effect again under a Profile with different models (`src/strategy.ts:31`). This is a configuration-derived behaviour, not a fifth selectable strategy.
 
 **Binding.** Each coding dispatch and each integration records its effective strategy and the sup/def Profile snapshot it was bound to, so later Profile or settings edits never rewrite a running execution or a prepared integration; a refreshed integration binds the settings in force when it is prepared (`src/configuration.ts:199`). Integration review and repair keep their own roles and permissions — a reviewer stays read-only and a repair `coding_worker` keeps its write scope — while the integrate strategy selects the model configuration (`src/workflow.ts:400`).
 
@@ -213,7 +213,7 @@ The tool also takes `generation`, `task`, `attempt`, `lane`, `base`, `result`, `
 
 The client half registers:
 
-- a **composer configuration picker** in `conversation.input.left`, whose chips select the Session's workflow configuration and coding strategy;
+- a **composer configuration picker** in `conversation.input.left`, whose chip selects the Session's workflow configuration (the coding strategy is settings-only);
 - the **Workflow settings page** in `settings.section` (id `workflow`), with a **Strategy** tab holding the two independent strategy defaults and a **Configurations** tab holding the per-key editors, described above (`src/client/index.ts:49`, `src/client/index.ts:60`).
 
 ## Compatibility

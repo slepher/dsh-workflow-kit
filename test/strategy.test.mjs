@@ -95,17 +95,14 @@ test("the settings schema defaults the two strategies independently", () => {
   assert.throws(() => WorkflowSettingsSchema({ codingStrategy: "turbo" }));
 });
 
-test("Session strategy overrides persist next to profile selections and never disturb them", t => {
+test("profile selections persist without a Session strategy override", t => {
   const stateDir = mkdtempSync(join(tmpdir(), "workflow-strategy-")); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
   const store = new WorkflowStore(stateDir);
   store.selectProfile("session-1", "gpt-workflow");
-  assert.equal(store.strategyPreference("session-1"), undefined, "no override means inherit the stored default");
-  store.selectStrategy("session-1", "expert");
-  store.selectStrategy("session-2", "economy");
   const reloaded = new WorkflowStore(stateDir);
-  assert.equal(reloaded.strategyPreference("session-1"), "expert");
-  assert.equal(reloaded.strategyPreference("session-2"), "economy");
-  assert.equal(reloaded.selectedProfile("session-1"), "gpt-workflow", "profile selection is untouched");
-  reloaded.selectStrategy("session-1", undefined);
-  assert.equal(new WorkflowStore(stateDir).strategyPreference("session-1"), undefined, "clearing restores the default");
+  assert.equal(reloaded.selectedProfile("session-1"), "gpt-workflow", "profile selection persists");
+  // The retired per-Session override is no longer stored: the coding strategy has
+  // exactly one source, the settings value.
+  assert.equal(Object.hasOwn(reloaded.read(), "sessionStrategies"), false);
+  assert.equal(typeof store.selectStrategy, "undefined");
 });

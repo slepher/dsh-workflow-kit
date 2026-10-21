@@ -37,29 +37,6 @@ export class WorkflowStore {
     this.state = next;
   }
 
-  /**
-   * Read one Session's coding-strategy override.
-   * @param parentSessionId - native Session identity.
-   * @returns the override, or `undefined` when the Session inherits the stored default.
-   */
-  strategyPreference(parentSessionId: string): string | undefined {
-    if (!parentSessionId) throw new Error("Native parent Session identity is required");
-    return this.state.sessionStrategies?.[parentSessionId] ?? undefined;
-  }
-
-  /**
-   * Record one Session's coding-strategy override. This only ever holds coding
-   * preferences: integrate settings have no Session scope.
-   * @param parentSessionId - native Session identity.
-   * @param strategy - the chosen strategy, or `undefined` to clear the override.
-   */
-  selectStrategy(parentSessionId: string, strategy: string | undefined): void {
-    if (!parentSessionId) throw new Error("Native parent Session identity is required");
-    const next = { ...this.state, sessionStrategies: { ...this.state.sessionStrategies, [parentSessionId]: strategy ?? null } };
-    this.write(next);
-    this.state = next;
-  }
-
   save(): void {
     this.write(this.state);
   }
@@ -89,8 +66,6 @@ function parse(text: string): WorkflowState {
   if (!Array.isArray(value.runs) || !Array.isArray(value.lanes)) throw new Error("Invalid workflow orchestration state");
   if (value.selectedProfiles !== undefined && (value.selectedProfiles === null || typeof value.selectedProfiles !== "object" || Array.isArray(value.selectedProfiles)
     || Object.values(value.selectedProfiles).some(id => id !== null && (typeof id !== "string" || !id)))) throw new Error("Invalid workflow profile selections");
-  if (value.sessionStrategies !== undefined && (value.sessionStrategies === null || typeof value.sessionStrategies !== "object" || Array.isArray(value.sessionStrategies)
-    || Object.values(value.sessionStrategies).some(strategy => strategy !== null && (typeof strategy !== "string" || !strategy)))) throw new Error("Invalid workflow strategy preferences");
   if (value.nativeChildren !== undefined && (value.nativeChildren === null || typeof value.nativeChildren !== "object" || Array.isArray(value.nativeChildren))) throw new Error("Invalid native child records");
   for (const [id, record] of Object.entries(value.nativeChildren ?? {})) {
     if (!record || record.id !== id || typeof record.parentSessionId !== "string" || !record.parentSessionId
@@ -130,7 +105,6 @@ function parse(text: string): WorkflowState {
     for (const attempt of run.attempts ?? []) attempt.task.text ??= readFileSync(attempt.contract, "utf8");
   }
   return { runs: value.runs, lanes: value.lanes, ...(value.selectedProfiles === undefined ? {} : { selectedProfiles: value.selectedProfiles }),
-    ...(value.sessionStrategies === undefined ? {} : { sessionStrategies: value.sessionStrategies }),
     ...(value.nativeChildren === undefined ? {} : { nativeChildren: value.nativeChildren }) };
 }
 

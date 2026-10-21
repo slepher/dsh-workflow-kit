@@ -63,9 +63,9 @@ test("the default coding strategy dispatches the unified role on the def configu
   assert.equal(attempt.coding.def.model, "def-model", "the Profile snapshot is captured at dispatch");
 });
 
-test("a Session strategy override changes the configuration a dispatch binds", async t => {
+test("the stored coding setting changes the configuration a dispatch binds", async t => {
   const { f, dispatch } = await dispatched(t, DISTINCT);
-  f.store.selectStrategy("parent", "expert");
+  f.configuration.setUserStrategies({ codingStrategy: "expert" });
   await dispatch();
   const created = f.calls.find(call => call.options !== undefined);
   assert.equal(created.options.model, "sup-model", "expert runs the sup configuration");
@@ -78,12 +78,12 @@ test("an integrate selection never leaks into coding dispatch", async t => {
   const { f, dispatch } = await dispatched(t, DISTINCT);
   f.configuration.setUserStrategies({ codingStrategy: "adaptive", integrateStrategy: "expert" });
   await dispatch();
-  assert.equal(f.calls.find(call => call.options !== undefined).options.model, "def-model", "the coding preference, not the integrate default, decides");
+  assert.equal(f.calls.find(call => call.options !== undefined).options.model, "def-model", "the coding setting, not the integrate default, decides");
 });
 
-test("a same-model configuration fixes independent def execution whatever the preference says", async t => {
+test("a same-model configuration fixes independent def execution whatever the setting says", async t => {
   const { f, dispatch } = await dispatched(t, SHARED);
-  f.store.selectStrategy("parent", "bootstrap");
+  f.configuration.setUserStrategies({ codingStrategy: "bootstrap" });
   await dispatch();
   const created = f.calls.find(call => call.options !== undefined);
   assert.equal(created.options.model, "same-model");
@@ -91,10 +91,9 @@ test("a same-model configuration fixes independent def execution whatever the pr
   assert.match(f.promptText(created), /Bound execution strategy: independent \(requested bootstrap\); phase main; model configuration tier def/);
   const worker = (await f.run(() => f.workers.list("parent")))[0];
   assert.equal(worker.strategy.tier, "def", "no handoff tier is bound");
-  assert.equal(f.store.strategyPreference("parent"), "bootstrap", "the preference is retained for a later Profile switch");
 });
 
-test("switching to a same-model configuration and back restores the stored preference", async t => {
+test("a stored setting keeps applying across Profile switches", async t => {
   // The fixture ships two configurations: `a` carries the distinct models and
   // `b` rewrites every row to one shared model.
   const { repo, generation } = project(t);
@@ -102,22 +101,21 @@ test("switching to a same-model configuration and back restores the stored prefe
   const workflow = new Workflow(f.workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input));
   await action({ action: "adopt", generation });
-  f.store.selectStrategy("parent", "expert");
+  f.configuration.setUserStrategies({ codingStrategy: "expert" });
   await action({ action: "dispatch", task: "T001" });
-  assert.equal(f.calls.find(call => call.options !== undefined).options.model, "sup-model", "distinct models honor the preference");
+  assert.equal(f.calls.find(call => call.options !== undefined).options.model, "sup-model", "distinct models honor the setting");
 
-  // The shared-model configuration fixes independent def execution without
-  // discarding the preference.
+  // The shared-model configuration fixes independent def execution; the stored
+  // setting is not rewritten by that derivation.
   f.store.selectProfile("parent", "b");
   const second = await dispatchedOn(f, workflow, "T002");
   assert.equal(second.model, "model-b", "the shared-model configuration runs one model");
   assert.equal(second.effort, "medium", "the derived execution uses def's effort");
-  assert.equal(f.store.strategyPreference("parent"), "expert", "the preference survives the same-model period");
 
-  // Returning to a configuration with distinct models restores it.
+  // Returning to a configuration with distinct models still applies the setting.
   f.store.selectProfile("parent", "a");
   const third = await dispatchedOn(f, workflow, "T003");
-  assert.equal(third.model, "sup-model", "the stored preference takes effect again");
+  assert.equal(third.model, "sup-model", "the stored setting takes effect again");
 });
 
 /** Dispatch one more task from the same generation and return its created capture. */
@@ -164,7 +162,6 @@ async function acceptedCandidate(t, roles) {
 test("an integration binds the integrate strategy for its review, not the coding strategy", async t => {
   for (const [integrate, expected] of [["economy", "def-model"], ["expert", "sup-model"]]) {
     const { f, action } = await acceptedCandidate(t, DISTINCT);
-    f.store.selectStrategy("parent", "expert"); // a Session coding override that must not reach integration
     f.configuration.setUserStrategies({ codingStrategy: "expert", integrateStrategy: integrate });
     await action({ action: "integrate", task: "T001" });
     const summary = await action({ action: "status" });

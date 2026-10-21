@@ -140,13 +140,13 @@ allowBuilds:
 
 这些随包键默认值也是未知或缺失配置的兜底值（`src/roles.ts:44`）。旧的 `gpt-6-sol` 已不再是任何随包默认值；仍需要它的部署必须在自己 Profile 或已存储覆盖项中显式声明。
 
-**设置页面与输入框选择器。** Workflow 设置页面（`settings.section`，id 为 `workflow`）以路径变更的方式编辑已存储层：逐键的 provider/model/effort 编辑器，以及复制、重命名、删除、重置、设为默认等操作。随包配置可通过稀疏覆盖就地编辑并整体重置；副本是普通用户配置，可重命名或删除。`manager` 行会列出但不可编辑——manager 运行在输入框所选的模型上。输入框选择器（`conversation.input.left`，id 为 `workflow-config`）只做**选择**：选择配置和该 Session 的 coding 策略；它每次打开都会重新读取目录，并且在 subagent Session 中两个 chip 都会隐藏，因为该子会话的 profile 与策略已由启动它的委派固定。
+**设置页面与输入框选择器。** Workflow 设置页面（`settings.section`，id 为 `workflow`）以路径变更的方式编辑已存储层：逐键的 provider/model/effort 编辑器，以及复制、重命名、删除、重置、设为默认等操作。随包配置可通过稀疏覆盖就地编辑并整体重置；副本是普通用户配置，可重命名或删除。`manager` 行会列出但不可编辑——manager 运行在输入框所选的模型上。输入框选择器（`conversation.input.left`，id 为 `workflow-config`）只做**选择**：选择配置；coding 策略只来自设置，输入框不再提供控件。它每次打开都会重新读取目录，并且在 subagent Session 中该 chip 会隐藏，因为该子会话的 profile 已由启动它的委派固定。
 
 ## 策略
 
 策略不是权限等级。它决定一次 coding 执行使用哪套 Profile 模型配置、是否允许交接或请求有界专家咨询，以及 Host 绑定哪段阶段提示。执行角色自始至终都是 `coding_worker`。
 
-可选策略有四种：`economy`、`adaptive`、`bootstrap`、`expert`（`src/constants.ts:27`）。已存储的 coding 默认值是 `adaptive`，integrate 默认值是 `economy`。两者写入不同的设置路径，任何一方都不会覆盖另一方。coding 可由输入框做 per-Session 覆盖；integration 没有 Session 作用域，始终使用已存储的 integrate 设置（`src/store.ts:48`、`src/profile-rpc.ts:108`）。
+可选策略有四种：`economy`、`adaptive`、`bootstrap`、`expert`（`src/constants.ts:27`）。已存储的 coding 默认值是 `adaptive`，integrate 默认值是 `economy`。两者写入不同的设置路径，任何一方都不会覆盖另一方。两者都只来自设置：输入框不再提供 per-Session coding 覆盖，每次派发读取已存储的 coding 值；integration 没有 Session 作用域（`src/configuration.ts:136`）。
 
 | 请求的策略 | 阶段 | 模型配置 | 交接 | 咨询 | 绑定的阶段提示 |
 | --- | --- | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ allowBuilds:
 
 （来源：`bindCodingStrategy`，`src/strategy.ts:69`）
 
-**派生的 `independent`。** 当 Profile 的 `sup_coding_worker` 与 `def_coding_worker` 解析为同一 provider 与模型时，两种可选策略都不起作用：有效策略为 `independent`，def 独立完成整个任务，不授权交接或咨询，输入框也隐藏策略控件。该比较有意忽略 effort；已存储的偏好会被保留，切换到模型不同的 Profile 后重新生效（`src/strategy.ts:31`、`src/client/ConfigPicker.tsx:122`）。这是由配置推导出的行为，不是第五种可选策略。
+**派生的 `independent`。** 当 Profile 的 `sup_coding_worker` 与 `def_coding_worker` 解析为同一 provider 与模型时，两种可选策略都不起作用：有效策略为 `independent`，def 独立完成整个任务，不授权交接或咨询。该比较有意忽略 effort；已存储的 coding 设置仍是请求的策略，切换到模型不同的 Profile 后重新生效（`src/strategy.ts:31`）。这是由配置推导出的行为，不是第五种可选策略。
 
 **绑定。** 每次 coding 派发与每次集成都会记录其有效策略以及绑定时捕获的 sup/def Profile 快照，因此之后修改 Profile 或设置不会改写正在运行的执行或已准备的集成；refresh 后的集成绑定的是准备它时生效的设置（`src/configuration.ts:199`）。集成评审与修复保留各自的角色与权限——reviewer 只读，修复用的 `coding_worker` 保留其写入范围——integrate 策略只负责选择模型配置（`src/workflow.ts:400`）。
 
@@ -213,7 +213,7 @@ Host 只注册一个面向模型的工具：`codex_workflow`（`src/host.ts:170`
 
 客户端半部分注册：
 
-- 位于 `conversation.input.left` 的**输入框配置选择器**，其 chip 用于选择该 Session 的工作流配置与 coding 策略；
+- 位于 `conversation.input.left` 的**输入框配置选择器**，其 chip 用于选择该 Session 的工作流配置（coding 策略只来自设置）；
 - 位于 `settings.section`（id 为 `workflow`）的 **Workflow 设置页面**，包含保存两项独立策略默认值的 **Strategy** 标签页，以及保存逐键编辑器的 **Configurations** 标签页（`src/client/index.ts:49`、`src/client/index.ts:60`）。
 
 ## 兼容性

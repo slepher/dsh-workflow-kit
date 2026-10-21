@@ -79,8 +79,8 @@ test("the stored strategy defaults reach the Session the composer reads", async 
   assert.deepEqual(configurations.value.strategies, { coding: "expert", integrate: "bootstrap" });
   const profiles = await call("profiles", { sessionId: "parent" });
   assert.deepEqual(profiles.value.strategy,
-    { preference: null, default: "expert", effective: "independent", sameModel: false, fixed: false },
-    "a Session without an override inherits the stored coding default, not the integrate one");
+    { default: "expert", effective: "independent", sameModel: false },
+    "the Session inherits the stored coding setting, not the integrate one");
   assert.equal(profiles.value.selectedProfile, "gpt-workflow");
 });
 
@@ -88,10 +88,10 @@ test("an unset stored section falls back to the shipped strategy defaults", asyn
   const { call } = await host(t, { defaultConfig: "", codingStrategy: "adaptive", integrateStrategy: "economy", configs: {} });
   const profiles = await call("profiles", { sessionId: "parent" });
   assert.deepEqual(profiles.value.strategy,
-    { preference: null, default: "adaptive", effective: "adaptive", sameModel: false, fixed: false });
+    { default: "adaptive", effective: "adaptive", sameModel: false });
 });
 
-test("a same-model Profile reports fixed independent execution to the composer", async t => {
+test("a same-model Profile reports the derived independent execution", async t => {
   const { call } = await host(t, {
     defaultConfig: "gpt-workflow", codingStrategy: "bootstrap", integrateStrategy: "economy",
     configs: { "gpt-workflow": { roles: {
@@ -101,7 +101,7 @@ test("a same-model Profile reports fixed independent execution to the composer",
   });
   const profiles = await call("profiles", { sessionId: "parent" });
   assert.deepEqual(profiles.value.strategy,
-    { preference: null, default: "bootstrap", effective: "independent", sameModel: true, fixed: true },
-    "the composer hides the control and the effective strategy is the derived one");
+    { default: "bootstrap", effective: "independent", sameModel: true },
+    "the effective strategy is the derived one");
   assert.equal(profiles.value.configs.find(config => config.id === "gpt-workflow").sameModel, true);
 });

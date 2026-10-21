@@ -45,7 +45,7 @@ function project(t) {
 async function dispatched(t, { strategy = "bootstrap", threadHandoff = true, report = HANDOFF_REPORT, roles = DISTINCT, facts } = {}) {
   const { repo, generation, base } = project(t);
   const f = fixture(t, { cwd: repo, roles, threadHandoff, facts });
-  f.store.selectStrategy("parent", strategy);
+  f.configuration.setUserStrategies({ codingStrategy: strategy });
   const workflow = new Workflow(f.workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input));
   await action({ action: "adopt", generation });
@@ -407,7 +407,7 @@ test("turns on a successor adapter are read from the DSH session, so completion 
     const { repo, generation, base } = project(t);
     const f = fixture(t, { cwd: repo, roles: CROSS_PROVIDER, facts: () => ["[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)"],
       sessionEvents: id => rows.get(id) ?? [] });
-    f.store.selectStrategy("parent", "bootstrap");
+    f.configuration.setUserStrategies({ codingStrategy: "bootstrap" });
     const workflow = new Workflow(f.workers, "/skills/codex-workflow");
     const action = input => f.run(() => workflow.execute("parent", input));
     await action({ action: "adopt", generation });
@@ -462,7 +462,7 @@ test("a successor whose session is no longer live still confirms its handover", 
   const { repo, generation, base } = project(t);
   const f = fixture(t, { cwd: repo, roles: CROSS_PROVIDER, facts: () => ["[source: codex thread=th1 turn=t1 item=i1] command: pnpm test (exit 0)"],
     sessionEvents: id => rows.get(id) ?? [] });
-  f.store.selectStrategy("parent", "bootstrap");
+  f.configuration.setUserStrategies({ codingStrategy: "bootstrap" });
   const workflow = new Workflow(f.workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input));
   await action({ action: "adopt", generation });

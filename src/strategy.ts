@@ -35,7 +35,7 @@ export function sameModel(profile: Profile | undefined): boolean {
 
 /** One execution's resolved strategy: what runs now, what it may do next, and its phase prompts. */
 export interface StrategyBinding {
-  /** The strategy a Session or setting explicitly named; kept while a preference is inert. */
+  /** The strategy the settings named; kept while a same-model Profile makes it inert. */
   requested: CodingStrategy;
   /** The strategy this execution actually follows. */
   effective: EffectiveStrategy;

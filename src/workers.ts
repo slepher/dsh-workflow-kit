@@ -276,11 +276,10 @@ export class WorkflowWorkers {
     return profile;
   }
 
-  /** The coding preference this Session dispatches under, plus the stored default behind it. */
-  codingStrategy(): { requested: CodingStrategy; preference: CodingStrategy | undefined } {
+  /** The stored coding strategy this Session dispatches under. */
+  codingStrategy(): CodingStrategy {
     this.assertIdentity();
-    const preference = this.store.strategyPreference(String(this.context().session.id)) as CodingStrategy | undefined;
-    return { requested: preference ?? this.configuration.strategies().coding, preference };
+    return this.configuration.strategies().coding;
   }
 
   captureRole(role: string, requiredKeys: readonly string[] = [], options: CaptureOptions = {}): Capture {
@@ -295,13 +294,13 @@ export class WorkflowWorkers {
    * @returns the capture, including the strategy binding and Profile snapshot.
    */
   captureCoding(phase: CodingPhase = "main"): Capture {
-    const { requested } = this.codingStrategy();
+    const requested = this.codingStrategy();
     return this.codingCapture(this.selectedProfileId(), requested, phase);
   }
 
   /**
    * Capture one coding execution against an explicit Profile and strategy.
-   * Integration phases use this instead of the Session's coding preference.
+   * Integration phases use this instead of the stored coding strategy.
    * @param profile - bound Profile id.
    * @param requested - bound strategy.
    * @param phase - bound phase.

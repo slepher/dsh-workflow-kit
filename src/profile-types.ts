@@ -29,18 +29,14 @@ export interface CatalogView {
   strategies: { coding: CodingStrategy; integrate: CodingStrategy };
 }
 
-/** Session-scoped coding strategy facts the composer needs, resolved by the Host. */
+/** The stored coding strategy, as the Host resolves it for dispatch. */
 export interface StrategyView {
-  /** Session coding override; null when the Session inherits the stored default. */
-  preference: CodingStrategy | null;
-  /** Stored coding default that applies when the Session names none. */
+  /** Stored coding default; the only source, since the composer no longer carries an override. */
   default: CodingStrategy;
   /** Effective coding strategy for the next dispatch in this Session. */
   effective: EffectiveStrategy;
   /** Whether the selected configuration runs sup and def on the same provider and model. */
   sameModel: boolean;
-  /** Whether the profile fixes independent execution, so the composer control is hidden. */
-  fixed: boolean;
 }
 
 /** One model the route's own catalog advertises, in settings-page terms. */
@@ -81,7 +77,7 @@ export interface ConfigurationsView extends CatalogView {
 }
 
 /** Endpoints the browser half calls on the `/workflow` channel. */
-export type ProfileAction = "configurations" | "catalog" | "profiles" | "select-profile" | "select-strategy";
+export type ProfileAction = "configurations" | "catalog" | "profiles" | "select-profile";
 
 /** One stored role override as this browser writes it. */
 export type StoredRoleValue = { provider: string; model: string; reasoningEffort: string };

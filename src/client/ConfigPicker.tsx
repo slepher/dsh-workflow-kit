@@ -1,20 +1,15 @@
 /**
- * Composer seat (`conversation.input.left`): the user-facing controls for
- * choosing which workflow configuration new subagents of this Session use and
- * which coding strategy that Session dispatches under. They select only —
- * every edit lives on the Workflow settings page — and they re-read the
- * catalog each time they open, so the explicit refresh control is unnecessary.
- * The strategy control is hidden when the selected configuration's sup and def
- * entries share one provider and model, because that configuration already
- * fixes independent execution; the stored preference is retained, not erased.
+ * Composer seat (`conversation.input.left`): the user-facing control for
+ * choosing which workflow configuration new subagents of this Session use.
+ * It selects only — every edit, including the coding strategy, lives on the
+ * Workflow settings page, and the picker re-reads the catalog each time it
+ * opens, so the explicit refresh control is unnecessary.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconBranchOutlineRegular, IconChevronDownOutlineRegular, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { MenuEntry } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ProfileAction, ProfileView } from "../profile-types.js";
-import { STRATEGIES, type CodingStrategy } from "../constants.js";
-import type { WorkflowLocaleKey } from "./locales.js";
 import { installClientStyles } from "./styles.js";
 
 /** Registered face: one channel call the picker performs for its Session. */
@@ -24,24 +19,15 @@ export interface ConfigPickerInjected {
 
 type Props = PropsRuntime<"conversation.input.left"> & PropsLocale<"dsh-workflow-kit"> & InjectFace<ConfigPickerInjected>;
 
-/** Copy key for each strategy's display name. */
-const STRATEGY_LABEL: Record<CodingStrategy, WorkflowLocaleKey> = {
-  economy: "strategyEconomy",
-  adaptive: "strategyAdaptive",
-  bootstrap: "strategyBootstrap",
-  expert: "strategyExpert",
-};
-
-/** Render the composer configuration and strategy chips. @param props - composed slot props. @returns the chip group. */
+/** Render the composer configuration chip. @param props - composed slot props. @returns the chip. */
 export function ConfigPicker({ sessionId, useSession, request, t }: Props): ReactNode {
   const unavailable = useSession(snapshot => snapshot.removed || snapshot.openState === "error");
-  // A subagent's composer chooses neither: the delegation that started the child
-  // already fixed its profile and strategy, and the plan that owns them belongs
-  // to the parent session. The chips stay on the parent's composer.
+  // A subagent's composer chooses nothing: the delegation that started the child
+  // already fixed its profile, and the plan that owns it belongs to the parent
+  // session. The chip stays on the parent's composer.
   const subagent = useSession(snapshot => snapshot.subagent !== null);
   const [view, setView] = useState<ProfileView | null>(null);
   const [open, setOpen] = useState(false);
-  const [strategyOpen, setStrategyOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const generation = useRef(0);
@@ -79,15 +65,7 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
 
   const label = selected === "" ? t("pickerChoose") : selected;
 
-  // The Session's coding preference, or the stored default it currently inherits.
-  const strategy = view?.strategy;
-  const strategyItems: MenuEntry[] = [{ type: "label", id: "title", text: t("pickerStrategyTitle") }];
-  for (const id of STRATEGIES) strategyItems.push({ id, label: t(STRATEGY_LABEL[id]) });
-  if (strategy !== undefined && strategy.preference !== null) {
-    strategyItems.push({ id: "default", label: `${t("pickerStrategyFollow")} (${t(STRATEGY_LABEL[strategy.default])})` });
-  }
-
-  // Every hook above runs first: a subagent contributes no chips and no request.
+  // Every hook above runs first: a subagent contributes no chip and no request.
   if (subagent) return null;
 
   return <span className="wf-chip-group">
@@ -119,32 +97,5 @@ export function ConfigPicker({ sessionId, useSession, request, t }: Props): Reac
         if (id !== selected) send("select-profile", id);
       }}
     />
-    {strategy !== undefined && !strategy.fixed && <Menu
-      open={strategyOpen}
-      portal
-      autoFocus
-      selectedId={strategy.preference ?? strategy.default}
-      items={strategyItems}
-      onClose={() => { setStrategyOpen(false); }}
-      anchor={<button
-        type="button"
-        className="wf-trigger wf-chip"
-        aria-label={t("pickerStrategyTitle")}
-        aria-haspopup="menu"
-        disabled={unavailable}
-        onClick={() => {
-          if (strategyOpen) { setStrategyOpen(false); return; }
-          send("profiles");
-          setStrategyOpen(true);
-        }}
-      >
-        <span className="wf-trigger-label">{t(STRATEGY_LABEL[strategy.preference ?? strategy.default])}</span>
-        <IconChevronDownOutlineRegular size={14} />
-      </button>}
-      onSelect={id => {
-        setStrategyOpen(false);
-        send("select-strategy", id === "default" ? null : id);
-      }}
-    />}
   </span>;
 }

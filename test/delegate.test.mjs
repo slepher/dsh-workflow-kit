@@ -186,8 +186,9 @@ test("ordinary delegation runs coding independently, whatever the Session prefer
   const workflow = new Workflow(f.workers, "/skills/codex-workflow");
   const action = input => f.run(() => workflow.execute("parent", input));
 
-  // The Session prefers the strategy that hands off; delegation must not inherit it.
-  f.store.selectStrategy("parent", "bootstrap");
+  // The stored setting asks for the strategy that hands off; ordinary delegation
+  // has its own fixed independent binding and must not inherit it.
+  f.configuration.setUserStrategies({ codingStrategy: "bootstrap" });
   const delegated = await action({ action: "delegate", role: "coding_worker", text: "Patch the file.", writes: [cwd] });
   const opened = f.promptText(f.calls.at(-1));
   assert.match(opened, /\[coding-independent\]/, "the bound phase prompt is the independent one");
