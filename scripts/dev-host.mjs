@@ -20,7 +20,6 @@ export function parseDevOptions(args, env = process.env) {
 }
 
 export function resolveDevHost({ profile, patches, dshHome, expectedRoots, providerCheckout }) {
-  if (process.platform !== "linux") throw new Error("Dev Host owner identity requires Linux /proc");
   const directory = resolveProfileDir(profile, dshHome);
   const loaded = loadProfileDirectory("dsh", directory, join(directory, "package.json"));
   const homePatches = loadOptionalPatches("dsh", join(dshHome, "cordis.patch.yml")) ?? [];
@@ -61,6 +60,7 @@ export function inspectOwner(stateDir, profile) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid backend owner PID in ${pidFile}`);
   try { process.kill(pid, 0); }
   catch (error) { if (error?.code === "ESRCH") return; throw new Error(`Cannot inspect backend owner pid ${pid}`, { cause: error }); }
+  if (process.platform !== "linux") throw new Error("Dev Host owner identity requires Linux /proc");
   let argv;
   try { argv = readFileSync(`/proc/${pid}/cmdline`).toString().split("\0").filter(Boolean); }
   catch (error) {

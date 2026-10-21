@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,9 @@ import test from "node:test";
 
 const dev = fileURLToPath(new URL("../scripts/dev.mjs", import.meta.url));
 const waitFor = async check => {
-  for (let index = 0; index < 100; index++) {
+  // Full-suite builds compete for CPU; readiness is a state check, not a speed assertion.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     if (check()) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
@@ -18,7 +20,7 @@ const waitFor = async check => {
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 const devFixture = t => {
-  const root = mkdtempSync(join(tmpdir(), "workflow-dev-reuse-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "workflow-dev-reuse-")));
   const bin = join(root, "bin"), home = join(root, "home"), cwd = join(root, "workflow"), codex = join(root, "codex");
   const profileDir = join(home, "profiles", "workflow-dev"), stateDir = join(profileDir, "state", "codex-kit");
   for (const path of [bin, join(profileDir, "node_modules"), stateDir, join(cwd, "scripts"), join(codex, "scripts"), join(codex, "lib"), join(codex, "src"), join(cwd, "lib/generated")]) mkdirSync(path, { recursive: true });
@@ -35,7 +37,7 @@ const devFixture = t => {
   symlinkSync(cwd, join(profileDir, "node_modules", "dsh-workflow-kit"));
   writeFileSync(join(profileDir, "package.json"), JSON.stringify({ dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dsh-codex-app-provider", "dsh-workflow-kit"] } } }));
   writeFileSync(join(profileDir, "cordis.patch.yml"), `- id: dsh-codex-app-provider\n  config:\n    stateDir: ${stateDir}\n- id: hmr\n  disabled: false\n  config:\n    base: ${root}\n    root:\n      - workflow/lib\n      - codex/lib\n`);
-  writeFileSync(join(bin, "npm"), `#!/bin/sh\necho "$PWD $*" >> ${join(root, "builds")}\ncount=$(wc -l < ${join(root, "builds")})\nif [ -f ${join(root,"block-second")} ] && [ "$count" = 2 ]; then touch ${join(root,"second-build-started")}; trap 'echo done > ${join(root,"second-build-done")}; exit 0' INT; while true; do sleep 1; done; fi\nexit 0\n`);
+  writeFileSync(join(bin, "npm"), `#!/bin/sh\necho "$PWD $*" >> ${join(root, "builds")}\ncount=$(wc -l < ${join(root, "builds")})\nif [ -f ${join(root,"block-second")} ] && [ "$count" -eq 2 ]; then touch ${join(root,"second-build-started")}; trap 'echo done > ${join(root,"second-build-done")}; exit 0' INT; while true; do sleep 1; done; fi\nexit 0\n`);
   writeFileSync(join(bin, "dsh"), `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(join(root, "hosts"))}, String(process.pid) + "\\n"); appendFileSync(${JSON.stringify(join(root, "host-argv"))}, JSON.stringify(process.argv.slice(2)) + "\\n");\nsetInterval(() => {}, 1000);\n`);
   chmodSync(join(bin, "npm"), 0o755); chmodSync(join(bin, "dsh"), 0o755);
   const watcher = (name, marker) => `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(join(root, name))}, String(process.pid) + " " + process.argv.slice(2).join(" "));\nif (existsSync(${JSON.stringify(join(root, `fail-${name}`))})) process.exit(2); else if (existsSync(${JSON.stringify(join(root, `gate-${name}`))})) { const timer=setInterval(()=>{if(existsSync(${JSON.stringify(join(root, `release-${name}`))})){clearInterval(timer);console.log(${JSON.stringify(marker)});}},10); } else if (existsSync(${JSON.stringify(join(root, `late-${name}`))})) process.on("SIGINT", () => { console.log(${JSON.stringify(marker)}); writeFileSync(${JSON.stringify(join(root, `${name}-done`))}, "done"); setTimeout(() => process.exit(0), 40); }); else console.log(${JSON.stringify(marker)});\nsetInterval(() => {}, 1000);\n`;
@@ -134,6 +136,7 @@ test("joint dev fails loud on invalid owner metadata instead of starting a Host"
   const run = fixture.startDev();
   await waitFor(() => run.exitCode !== null || run.signalCode !== null);
   assert.equal(run.exitCode, 1);
+  assert.match(run.output, /Invalid backend owner PID/);
   assert.equal(existsSync(join(fixture.root, "hosts")), false);
 });
 
@@ -164,9 +167,11 @@ test("joint dev rejects a patch without a value before starting children", () =>
   assert.match(result.stderr, /--patch requires a file path/);
 });
 
-test("PATH dsh parses patch before pass-through app arguments", () => {
+test("PATH dsh parses patch before pass-through app arguments", t => {
   const patch = fileURLToPath(new URL("../cordis.patch.yml", import.meta.url));
   const result = spawnSync("dsh", ["--patch", patch, "--help"], { encoding: "utf8" });
+  if (result.error?.code === "ENOENT") return t.skip("optional integration check requires dsh on PATH");
+  assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /--patch <path>/);
   assert.doesNotMatch(result.stderr, /unknown option/);

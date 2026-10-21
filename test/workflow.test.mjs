@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -285,7 +285,7 @@ test("a repository keeps one lane pool that the next goal reuses", async t => {
   await asA({ action: "dispatch", task: "T001" });
   let summary = await asA({ action: "status" });
   const attempt = summary.tasks[0], lane = summary.lanes[0];
-  assert.equal(lane.path, join(repo, "agentwork", ".lanes", "lane-01"), "the worktree lives in the repository's pool");
+  assert.equal(lane.path, join(realpathSync(repo), "agentwork", ".lanes", "lane-01"), "the worktree lives in the repository's pool");
   assert.equal(existsSync(join(repo, "agentwork", "goalA", ".lanes")), false, "and never inside the goal that is using it");
 
   // Deliver and release it: releasing is what hands the worktree to the next goal.
