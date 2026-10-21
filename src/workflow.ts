@@ -9,7 +9,7 @@ import type { WorkflowWorkers } from './workers.js'
 import type { Capture, Report, WorkerProjection } from './workers.js'
 import { ROLES, CONFIG_KEYS, CODING_WORKER } from './roles.js'
 import { buildGateArgs, gateBinding, MANAGER_ROLE, ownsProductWrites } from './gate.js'
-import { CODEX_PROVIDER, CODING_CONFIG_KEY } from './constants.js'
+import { CODEX_APP_PROVIDER, CODING_CONFIG_KEY } from './constants.js'
 import { bindIntegrateStrategy, snapshotProfile, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type Tier } from './strategy.js'
 import { parseControlSignal, type ConsultSignal } from './control.js'
 import type { HandoffRecord, ReportUsage } from './workers.js'
@@ -289,7 +289,7 @@ export class Workflow {
    * @returns the sentence to append, or an empty string when they already agree.
    */
   private commandDirectoryNote(run: Run, provider: string, cwd: string): string {
-    if (provider === CODEX_PROVIDER) return ''
+    if (provider === CODEX_APP_PROVIDER) return ''
     const workspace = this.workers.parentCwd(run.parent)
     if (workspace === cwd) return ''
     return ` This Session's workspace is ${workspace}, so run every command — build, test, git — with ${cwd} as its working directory (pass workdir ${cwd}, or cd there first) and write the assigned files by their absolute paths or relative to that workspace.`
@@ -1024,7 +1024,7 @@ export class Workflow {
     // where a command acts. A Codex thread is started in the assigned directory;
     // a DSH-native child keeps its parent's workspace, so the prompt names the
     // assignment separately from it and never claims a directory it does not have.
-    const native=role.execution.provider!==CODEX_PROVIDER&&this.workers.parentCwd(run.parent)!==cwd
+    const native=role.execution.provider!==CODEX_APP_PROVIDER&&this.workers.parentCwd(run.parent)!==cwd
     const where=`${native?`Task cwd ${cwd}`:`Task and command cwd ${cwd}`}.${this.commandDirectoryNote(run,role.execution.provider,cwd)}`
     const initialPrompt=`Execute the frozen contract ${contract}; shared plan ${join(directory,'plan.md')}. Input commit ${base}; attempt ${number}. ${where} Read scope ${JSON.stringify(task.reads??['.'])}; allocated resources ${JSON.stringify(allocation)}. Other workers share the repository: preserve their changes and stay within owned paths. ${task.owned.length?'Commit only explicitly owned product changes in the assigned workspace; do not mutate the integration target.':'No code changes or commits are required; candidate is the input commit.'}${bound} Return the complete result as Markdown in your final response beginning with exactly these execution-result fields, one per line:\n- Task: ${task.id}\n- Contract revision: ${task.revision}\n- Attempt: ${number}\n- Input snapshot: ${base}\n- Candidate snapshot: <actual commit>\n- Outcome: <complete, blocked, needs-decision or needs-verification>\nInclude verification commands, cwd and exits. On insufficient resources include blocked step, evidence, needed resources, completed work and still-running processes. Write only explicitly requested reports at ${JSON.stringify(reportPaths)} and raw artifacts at ${artifacts}; result.md is retained by the plugin. Do not spawn children or re-enter the root workflow. Return independently when done or blocked.`
     const a:Attempt={task:structuredClone(task),number,worker,initialPrompt,initialStartKey,lane:lane?.name,allocation,base,contract,directory,state:'reserved',

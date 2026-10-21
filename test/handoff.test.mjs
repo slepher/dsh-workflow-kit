@@ -11,9 +11,9 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
 
 /** Distinct sup/def coding configurations a bootstrap handoff can move between. */
 const DISTINCT = {
-  reviewer: { provider: "codex", model: "review-model", reasoningEffort: "high" },
-  def_coding_worker: { provider: "codex", model: "def-model", reasoningEffort: "medium" },
-  sup_coding_worker: { provider: "codex", model: "sup-model", reasoningEffort: "high" },
+  reviewer: { provider: "codex-app", model: "review-model", reasoningEffort: "high" },
+  def_coding_worker: { provider: "codex-app", model: "def-model", reasoningEffort: "medium" },
+  sup_coding_worker: { provider: "codex-app", model: "sup-model", reasoningEffort: "high" },
 };
 
 const HANDOFF_REPORT = [
@@ -68,7 +68,7 @@ test("a bootstrap opening report continues the task on a def successor child", a
   assert.notEqual(handoff.toWorker, attempt.workerId, "the successor is a new child");
   assert.equal(handoff.status, "started");
   assert.equal(handoff.targetTier, "def");
-  assert.deepEqual(handoff.targetConfig, { provider: "codex", model: "def-model", reasoningEffort: "medium" });
+  assert.deepEqual(handoff.targetConfig, { provider: "codex-app", model: "def-model", reasoningEffort: "medium" });
   assert.equal(handoff.requestId, `${attempt.workerId}:handoff:${handoff.sourceTurnId}`);
   assert.equal(handoff.sourceTurnId, attempt.turnId, "the source turn is the opening turn");
   assert.equal(handoff.messageId, `inbox-${handoff.toWorker}-1`);
@@ -130,7 +130,7 @@ test("the handoff keeps the dispatch snapshot after a Profile edit", async t => 
   const toWorker = (await action({ action: "status" })).tasks[0].handoff.toWorker;
   // The live catalog now offers another def configuration; the successor must
   // still run the configuration captured at dispatch.
-  f.configuration.setUserConfigs({ a: { roles: { ...DISTINCT, def_coding_worker: { provider: "codex", model: "edited-model", reasoningEffort: "low" } } } });
+  f.configuration.setUserConfigs({ a: { roles: { ...DISTINCT, def_coding_worker: { provider: "codex-app", model: "edited-model", reasoningEffort: "low" } } } });
   const created = f.calls.find(call => call.id === toWorker);
   assert.equal(created.options.model, "def-model", "the bound snapshot decides the successor configuration");
   assert.equal(f.handoffCalls[0].model, "def-model");

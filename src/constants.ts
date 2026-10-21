@@ -4,7 +4,7 @@ export const WORKFLOW_PLUGIN_ID = "dsh-workflow-kit";
 export const WORKFLOW_SETTINGS_NAMESPACE = WORKFLOW_PLUGIN_ID;
 
 /** Provider serving the shipped `gpt-workflow` defaults. */
-export const CODEX_PROVIDER = "codex";
+export const CODEX_APP_PROVIDER = "codex-app";
 
 /** Provider and model serving every role in the shipped `ds-workflow` defaults. */
 export const DEEPSEEK_PROVIDER = "deepseek-official";

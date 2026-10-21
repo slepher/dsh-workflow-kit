@@ -135,7 +135,7 @@ allowBuilds:
 
 | Profile | provider | 角色 |
 | --- | --- | --- |
-| `gpt-workflow`（`profiles/gpt-workflow.json`） | `codex` | `planner` = `gpt-6-astra`（high）；`reviewer` = `gpt-6.1-sol`（high）；`context_collector` = `gpt-6-luna`（high）；`def_coding_worker` = `gpt-6-luna`（medium）；`sup_coding_worker` = `gpt-6.1-sol`（medium）；`evidence_runner` = `gpt-6-luna`（medium）；`full_tester` = `gpt-6-luna`（medium）。 |
+| `gpt-workflow`（`profiles/gpt-workflow.json`） | `codex-app` | `planner` = `gpt-6-astra`（high）；`reviewer` = `gpt-6.1-sol`（high）；`context_collector` = `gpt-6-luna`（high）；`def_coding_worker` = `gpt-6-luna`（medium）；`sup_coding_worker` = `gpt-6.1-sol`（medium）；`evidence_runner` = `gpt-6-luna`（medium）；`full_tester` = `gpt-6-luna`（medium）。 |
 | `ds-workflow`（`profiles/ds-workflow.json`） | `deepseek-official` | 每个键都是 `deepseek-flash`，其中 `planner`、`reviewer`、`context_collector` 为 `max` effort，coding、evidence 与 tester 键为 `high`。 |
 
 这些随包键默认值也是未知或缺失配置的兜底值（`src/roles.ts:44`）。旧的 `gpt-6-sol` 已不再是任何随包默认值；仍需要它的部署必须在自己 Profile 或已存储覆盖项中显式声明。

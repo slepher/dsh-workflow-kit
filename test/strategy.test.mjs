@@ -14,16 +14,16 @@ const instructions = role => `Instructions for ${role}`;
 
 /** A configuration with distinct sup/def coding models. */
 const distinct = () => new WorkflowConfiguration({ a: { roles: {
-  planner: { provider: "codex", model: "planner-model", reasoningEffort: "high" },
-  reviewer: { provider: "codex", model: "review-model", reasoningEffort: "high" },
-  def_coding_worker: { provider: "codex", model: "def-model", reasoningEffort: "medium" },
-  sup_coding_worker: { provider: "codex", model: "sup-model", reasoningEffort: "high" },
+  planner: { provider: "codex-app", model: "planner-model", reasoningEffort: "high" },
+  reviewer: { provider: "codex-app", model: "review-model", reasoningEffort: "high" },
+  def_coding_worker: { provider: "codex-app", model: "def-model", reasoningEffort: "medium" },
+  sup_coding_worker: { provider: "codex-app", model: "sup-model", reasoningEffort: "high" },
 } } }, instructions);
 
 /** A configuration whose sup/def rows share one provider and model. */
 const shared = (effort = "low") => new WorkflowConfiguration({ a: { roles: {
-  def_coding_worker: { provider: "codex", model: "same-model", reasoningEffort: "medium" },
-  sup_coding_worker: { provider: "codex", model: "same-model", reasoningEffort: effort },
+  def_coding_worker: { provider: "codex-app", model: "same-model", reasoningEffort: "medium" },
+  sup_coding_worker: { provider: "codex-app", model: "same-model", reasoningEffort: effort },
 } } }, instructions);
 
 test("each strategy binds the configuration tier and phase prompts the design names", () => {

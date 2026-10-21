@@ -1,37 +1,37 @@
 {
   "roles": {
     "planner": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6-astra",
       "reasoningEffort": "high"
     },
     "reviewer": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6.1-sol",
       "reasoningEffort": "high"
     },
     "context_collector": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6-luna",
       "reasoningEffort": "high"
     },
     "def_coding_worker": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     },
     "sup_coding_worker": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6.1-sol",
       "reasoningEffort": "medium"
     },
     "evidence_runner": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     },
     "full_tester": {
-      "provider": "codex",
+      "provider": "codex-app",
       "model": "gpt-6-luna",
       "reasoningEffort": "medium"
     }

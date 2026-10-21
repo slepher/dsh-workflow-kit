@@ -15,7 +15,7 @@ import { WorkflowWorkers } from "../lib/workers.js";
  *   fact projector, and per-child session events.
  * @returns the composed workers, fake native services, and captured calls.
  */
-export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model: "model-a", reasoningEffort: "high" } }, threadHandoff = true, facts, sessionEvents } = {}) {
+export function fixture(t, { cwd, roles = { reviewer: { provider: "codex-app", model: "model-a", reasoningEffort: "high" } }, threadHandoff = true, facts, sessionEvents } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "native-workflow-"));
   cwd ??= stateDir;
   t.after(() => rmSync(stateDir, { recursive: true, force: true }));

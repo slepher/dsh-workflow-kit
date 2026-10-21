@@ -11,16 +11,16 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
 
 /** Two distinct coding configurations plus one reviewer row. */
 const DISTINCT = {
-  reviewer: { provider: "codex", model: "review-model", reasoningEffort: "high" },
-  def_coding_worker: { provider: "codex", model: "def-model", reasoningEffort: "medium" },
-  sup_coding_worker: { provider: "codex", model: "sup-model", reasoningEffort: "high" },
+  reviewer: { provider: "codex-app", model: "review-model", reasoningEffort: "high" },
+  def_coding_worker: { provider: "codex-app", model: "def-model", reasoningEffort: "medium" },
+  sup_coding_worker: { provider: "codex-app", model: "sup-model", reasoningEffort: "high" },
 };
 
 /** One provider and model for both coding configurations. */
 const SHARED = {
-  reviewer: { provider: "codex", model: "review-model", reasoningEffort: "high" },
-  def_coding_worker: { provider: "codex", model: "same-model", reasoningEffort: "medium" },
-  sup_coding_worker: { provider: "codex", model: "same-model", reasoningEffort: "ultra" },
+  reviewer: { provider: "codex-app", model: "review-model", reasoningEffort: "high" },
+  def_coding_worker: { provider: "codex-app", model: "same-model", reasoningEffort: "medium" },
+  sup_coding_worker: { provider: "codex-app", model: "same-model", reasoningEffort: "ultra" },
 };
 
 /** One repository, generation and implementation contract with the given Role. */

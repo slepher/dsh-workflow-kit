@@ -12,7 +12,7 @@ const shipped = name => {
 };
 /** One shipped configuration carrying a single reviewer row. */
 const builtin = () => ({
-  "gpt-workflow": parseProfile({ roles: { reviewer: { provider: "codex", model: "model-file", reasoningEffort: "high" } } }),
+  "gpt-workflow": parseProfile({ roles: { reviewer: { provider: "codex-app", model: "model-file", reasoningEffort: "high" } } }),
 });
 const configOf = (catalog, id) => catalog.view().configs.find(config => config.id === id);
 
@@ -20,7 +20,7 @@ test("a stored override replaces one role and leaves the rest inherited", () => 
   const catalog = new WorkflowConfiguration(builtin(), instructions);
   const before = configOf(catalog, "gpt-workflow");
   assert.deepEqual(before.roles.reviewer,
-    { provider: "codex", model: "model-file", reasoningEffort: "high", overridden: false });
+    { provider: "codex-app", model: "model-file", reasoningEffort: "high", overridden: false });
   // A role the shipped configuration omits resolves through the shipped role default.
   assert.deepEqual(before.roles.planner, { ...shipped("planner"), overridden: false });
 
@@ -39,7 +39,7 @@ test("a stored override replaces one role and leaves the rest inherited", () => 
   // Clearing the stored section reverts the configuration whole.
   catalog.setUserConfigs({});
   assert.deepEqual(configOf(catalog, "gpt-workflow").roles.reviewer,
-    { provider: "codex", model: "model-file", reasoningEffort: "high", overridden: false });
+    { provider: "codex-app", model: "model-file", reasoningEffort: "high", overridden: false });
 });
 
 test("a configuration with no shipped counterpart is a stored custom configuration", () => {
@@ -79,14 +79,14 @@ test("the shipped catalog offers both provider classes with the translated effor
   const shippedProfiles = loadBuiltinProfiles();
   assert.deepEqual(Object.keys(shippedProfiles).sort(), ["ds-workflow", "gpt-workflow"]);
   for (const [name, row] of Object.entries(shippedProfiles["gpt-workflow"].roles)) {
-    assert.equal(row.provider, "codex", `${name} keeps the codex provider`);
+    assert.equal(row.provider, "codex-app", `${name} keeps the codex-app provider`);
   }
   for (const [name, row] of Object.entries(shippedProfiles["ds-workflow"].roles)) {
     assert.equal(row.provider, "deepseek-official", name);
     assert.equal(row.model, "deepseek-flash", name);
     assert.ok(["max", "high"].includes(row.reasoningEffort), `${name} carries a translated effort`);
   }
-  // The codex high/medium split maps onto the DeepSeek max/high split.
+  // The codex-app high/medium split maps onto the DeepSeek max/high split.
   assert.equal(shippedProfiles["ds-workflow"].roles.planner.reasoningEffort, "max");
   assert.equal(shippedProfiles["ds-workflow"].roles.full_tester.reasoningEffort, "high");
 });

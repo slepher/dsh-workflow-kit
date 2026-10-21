@@ -35,7 +35,7 @@ async function host(t, options = {}) {
   const codingGate = gateBinding("coding_worker", buildGateArgs({ cwd: lane, lane, productWrites: [join(source, "a.ts")], auxiliaryWrites: [artifacts] }));
   const seed = new WorkflowStore(stateDir);
   const record = (id, gate) => ({ id, parentSessionId: "parent", name: id, role: "coding_worker", profile: "a",
-    execution: { provider: "codex", model: "m", reasoningEffort: "high", developerInstructions: "i" },
+    execution: { provider: "codex-app", model: "m", reasoningEffort: "high", developerInstructions: "i" },
     boundary: { cwd: lane, writableRoots: [lane], network: "disabled", ports: {} }, dispatches: [], acceptance: {},
     ...(gate === undefined ? {} : { gate }) });
   seed.putNativeChild(record("child", codingGate));

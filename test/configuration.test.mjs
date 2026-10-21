@@ -19,7 +19,7 @@ test("capture resolves the effective role and composes instructions at call time
   const catalog = new WorkflowConfiguration(loadBuiltinProfiles(),
     roleInstructions("/skills/codex-workflow", "/skills/audit-implementation-simplicity"));
   const captured = catalog.capture("gpt-workflow", "planner");
-  assert.equal(captured.provider, "codex");
+  assert.equal(captured.provider, "codex-app");
   assert.equal(captured.model, "gpt-6-astra");
   // The deployment's installed skill layout decides the instruction paths.
   assert.ok(captured.developerInstructions.includes("/skills/codex-workflow/references/roles/planner.md"));

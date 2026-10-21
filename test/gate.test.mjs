@@ -294,7 +294,7 @@ test("a stored gate is validated, and records without one stay readable", t => {
   t.after(() => rmSync(stateDir, { recursive: true, force: true }));
   const state = join(stateDir, "orchestration.json");
   const record = (gate) => ({ id: "child", parentSessionId: "parent", name: "n", role: "coding_worker", profile: "a",
-    execution: { provider: "codex", model: "m", reasoningEffort: "high", developerInstructions: "i" },
+    execution: { provider: "codex-app", model: "m", reasoningEffort: "high", developerInstructions: "i" },
     boundary: { cwd: f.lane, writableRoots: [f.lane], network: "disabled", ports: {} }, dispatches: [], acceptance: {},
     ...(gate === undefined ? {} : { gate }) });
   const write = value => {

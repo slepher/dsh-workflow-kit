@@ -135,7 +135,7 @@ Shipped profiles (package content, not user configuration):
 
 | Profile | Provider | Roles |
 | --- | --- | --- |
-| `gpt-workflow` (`profiles/gpt-workflow.json`) | `codex` | `planner` = `gpt-6-astra` (high); `reviewer` = `gpt-6.1-sol` (high); `context_collector` = `gpt-6-luna` (high); `def_coding_worker` = `gpt-6-luna` (medium); `sup_coding_worker` = `gpt-6.1-sol` (medium); `evidence_runner` = `gpt-6-luna` (medium); `full_tester` = `gpt-6-luna` (medium). |
+| `gpt-workflow` (`profiles/gpt-workflow.json`) | `codex-app` | `planner` = `gpt-6-astra` (high); `reviewer` = `gpt-6.1-sol` (high); `context_collector` = `gpt-6-luna` (high); `def_coding_worker` = `gpt-6-luna` (medium); `sup_coding_worker` = `gpt-6.1-sol` (medium); `evidence_runner` = `gpt-6-luna` (medium); `full_tester` = `gpt-6-luna` (medium). |
 | `ds-workflow` (`profiles/ds-workflow.json`) | `deepseek-official` | every key is `deepseek-flash`, at `max` effort for `planner`, `reviewer` and `context_collector`, and `high` for the coding, evidence and tester keys. |
 
 These shipped key defaults are also what an unknown or missing configuration falls back to (`src/roles.ts:44`). The older `gpt-6-sol` id is no longer a shipped default anywhere; a deployment that still wants it must state it explicitly in its own Profile or stored override.

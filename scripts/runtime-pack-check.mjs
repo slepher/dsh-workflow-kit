@@ -22,7 +22,7 @@ export async function verifyInstalledRuntime(directory, { workflow }) {
     ctx.provide("sessions", { get: id => sessions.get(String(id)) });
     const mounted = ctx.plugin(provider, { stateDir, command: "pack-check-codex-must-not-run" });
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(ctx.llm.listProviders().filter(value => value.id === "codex").length, 1);
+    assert.equal(ctx.llm.listProviders().filter(value => value.id === "codex-app").length, 1);
     assert.equal(await ctx.codexExecution.read("absent"), undefined);
     assert.equal(ctx.get("codexKit"), undefined);
     assert.equal(existsSync(join(stateDir, "owner.lock")), true);
@@ -41,10 +41,10 @@ export async function verifyInstalledRuntime(directory, { workflow }) {
       assert.equal(JSON.parse(result.content[0].text).adopted, false);
       await managed.dispose();
       assert.ok(ctx.codexExecution);
-      assert.equal(ctx.llm.listProviders().filter(value => value.id === "codex").length, 1);
+      assert.equal(ctx.llm.listProviders().filter(value => value.id === "codex-app").length, 1);
     }
     await mounted.dispose();
-    assert.equal(ctx.llm.listProviders().some(value => value.id === "codex"), false);
+    assert.equal(ctx.llm.listProviders().some(value => value.id === "codex-app"), false);
     assert.equal(existsSync(join(stateDir, "owner.lock")), false);
   } finally {
     await ctx.fiber.dispose();

@@ -95,8 +95,8 @@ test("a same-model Profile reports fixed independent execution to the composer",
   const { call } = await host(t, {
     defaultConfig: "gpt-workflow", codingStrategy: "bootstrap", integrateStrategy: "economy",
     configs: { "gpt-workflow": { roles: {
-      def_coding_worker: { provider: "codex", model: "one-model", reasoningEffort: "medium" },
-      sup_coding_worker: { provider: "codex", model: "one-model", reasoningEffort: "high" },
+      def_coding_worker: { provider: "codex-app", model: "one-model", reasoningEffort: "medium" },
+      sup_coding_worker: { provider: "codex-app", model: "one-model", reasoningEffort: "high" },
     } } },
   });
   const profiles = await call("profiles", { sessionId: "parent" });

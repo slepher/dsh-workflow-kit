@@ -131,9 +131,9 @@ test("shipped client registers the composer picker and the Workflow settings pag
   const settings = section.inject();
   assert.equal(typeof settings.hooks.workflowSettings.getSnapshot, "function");
   assert.equal(typeof settings.hooks.workflowSettings.subscribe, "function");
-  await settings.setRole("gpt-workflow", "planner", { provider: "codex", model: "gpt-6-astra", reasoningEffort: "high" });
+  await settings.setRole("gpt-workflow", "planner", { provider: "codex-app", model: "gpt-6-astra", reasoningEffort: "high" });
   assert.deepEqual(detached(mutations.at(-1)), [{ op: "set", path: ["configs", "gpt-workflow", "roles", "planner"],
-    value: { provider: "codex", model: "gpt-6-astra", reasoningEffort: "high" } }]);
+    value: { provider: "codex-app", model: "gpt-6-astra", reasoningEffort: "high" } }]);
   await settings.setDefault("ds-workflow");
   assert.deepEqual(detached(mutations.at(-1)), [{ op: "set", path: ["defaultConfig"], value: "ds-workflow" }]);
   await settings.resetConfig("gpt-workflow");

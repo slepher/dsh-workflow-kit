@@ -12,6 +12,7 @@ import type { WorkflowStore } from "./store.js";
 import type { WorkflowConfiguration, RoleExecution, RoleInput, CaptureOptions } from "./configuration.js";
 import type { Boundary, ChildAgentOptions, GateBinding, ThreadHandoffService } from "./types.js";
 import { CONFIG_KEYS, CODING_WORKER } from "./roles.js";
+import { CODEX_APP_PROVIDER } from "./constants.js";
 import { buildGateArgs, gateBinding, installedCodexToolGate } from "./gate.js";
 import { bindCodingStrategy, snapshotProfile, tierConfigKey, type CodingPhase, type CodingStrategy, type EffectiveStrategy, type StrategyBinding, type Tier } from "./strategy.js";
 import { handoffPrompt, parseControlSignal, type ControlSignal, type HandoffSignal } from "./control.js";
@@ -26,7 +27,7 @@ const { queueHostSubagentPrompt, steerHostSubagentPrompt } = subagentInternal;
 type NativeFacts = NativeExecution & { pending?: { model?: string; reasoningEffort?: string } };
 
 /** The provider whose native execution the `codexExecution` reader projects. */
-const NATIVE_EXECUTION_PROVIDER = "codex";
+const NATIVE_EXECUTION_PROVIDER = CODEX_APP_PROVIDER;
 
 /** One model-visible turn the DSH session itself recorded, for a non-native provider. */
 interface SessionTurn {
