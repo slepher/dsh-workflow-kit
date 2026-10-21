@@ -98,14 +98,15 @@ export function fixture(t, { cwd, roles = { reviewer: { provider: "codex", model
     assert.equal(mode, "read");
     return { async read() { return { events: sessionEvents?.(String(id)) ?? [] }; }, async close() {} };
   } };
-  const ctx = { agents, sessions, get: name => name === "codexExecution" ? execution : name === "codexHandoff" ? handoffService
+  const ctx = { workingDirectory: { get: session => session.currentCwd ?? session.header.cwd }, logger: { warn() {} }, agents, sessions, get: name => name === "codexExecution" ? execution : name === "codexHandoff" ? handoffService
       : name === "codexToolGate" ? toolGate
       : name === "sessionPersistence" ? persistence : undefined,
     codexExecution: execution, codexToolGate: toolGate, ...(handoffService === undefined ? {} : { codexHandoff: handoffService }), subagents: {
-    async startContinuable(spec) { calls.push(structuredClone({ id: spec.childId, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt, spec.request.parent) }; },
+    async startActivation(spec) { calls.push(structuredClone({ id: spec.childId, cwd: spec.request.cwd, delivery: spec.delivery, options: spec.request.agentOptions, prompt: spec.request.prompt })); return { childId: spec.childId, messageId: begin(spec.childId, spec.request.agentOptions, spec.request.prompt, spec.request.parent), result: Promise.resolve({ output: "", stopReason: "complete" }), async dispose() {} }; },
     async [Symbol.for("dsh.subagent.deliverPrompt")](delegating, id, content, _source, _signal, delivery) {
       calls.push({ id, delivery, content }); return begin(id, nativeFacts.get(id), content, delegating);
     },
+    async drainChildren(_parent, ids) { for (const id of ids) { agents.delete(id); sessions.delete(id); } },
     interrupt(id) { calls.push({ id, interrupt: true }); nativeFacts.get(id).state = "interrupt-requested"; },
   } };
   const workers = new WorkflowWorkers(ctx, store, configuration, () => "a", "/skills/codex-workflow", undefined);

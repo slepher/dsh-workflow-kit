@@ -31,7 +31,7 @@ class Sessions extends Service {
 }
 class Connection extends Service {
   constructor(scope) { super(scope, "connection"); }
-  requestRejection() { return undefined; }
+  admit() { return { peer: { principal: { kind: "owner" } } }; }
 }
 class WebServer extends Service {
   route = undefined;
@@ -43,7 +43,8 @@ class WebServer extends Service {
 async function host(t, stored) {
   const root = mkdtempSync(join(tmpdir(), "workflow-host-strategy-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const ctx = new Context(); t.after(() => ctx.fiber.dispose());
+  const ctx = new Context();
+  ctx.provide("workingDirectory", { get: session => session.currentCwd ?? session.header.cwd }); t.after(() => ctx.fiber.dispose());
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
   await ctx.plugin(CodexExecution); await ctx.plugin(CodexToolGate); await ctx.plugin(Subagents); await ctx.plugin(Sessions);
   await ctx.plugin(Connection); await ctx.plugin(WebServer);

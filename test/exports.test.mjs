@@ -18,7 +18,7 @@ test("exports the workflow boundary", () => {
   assert.equal(manifest.exports["./client"].default, "./lib/client.js");
   assert.equal(manifest.dsh.client.platform, "web");
   assert.equal("dsh-codex-kit-backend" in manifest.dependencies, false);
-  assert.equal(manifest.peerDependencies["dsh-codex-app-provider"], "0.1.1");
+  assert.equal(manifest.peerDependencies["dsh-codex-app-provider"], "0.2.1");
   assert.equal("dsh-codex-kit-backend" in manifest.devDependencies, false);
   assert.doesNotMatch(JSON.stringify(manifest) + lock, /file:\.\.\/dsh-codex-kit|\/tmp\/|\/home\//);
   // A git install fetches this package alone, and pnpm runs `npm install` inside
@@ -30,17 +30,15 @@ test("exports the workflow boundary", () => {
   assert.equal(JSON.parse(lock).packages["node_modules/dsh-codex-kit-backend"], undefined);
   assert.equal("dsh-codex-kit" in manifest.dependencies, false);
   assert.equal(manifest.peerDependenciesMeta.react.optional, true);
-  // Every host package is declared optionally with a `*` range, so the harness
-  // compatibility gate never judges this package by a pinned generation and one
-  // build loads on several dsh releases. The Host half imports the connection
-  // request/response schemas at runtime, so an isolated consumer must install the
-  // host generation itself; `scripts/pack-check.mjs` and
-  // `scripts/verify-dsh-compat.mjs` do.
+  // Shared host instances are optional peers; engines.dsh independently limits
+  // the deployment to the supported runtime range. Folder preflight uses the
+  // existing development dependencies; live verification uses the current host.
   for (const [name, range] of Object.entries(manifest.peerDependencies)) {
     if (!name.startsWith("@deepseek-ai/")) continue;
     assert.equal(range, "*", `${name} must accept every host generation`);
     assert.equal(manifest.peerDependenciesMeta[name]?.optional, true, `${name} must be optional`);
   }
+  assert.equal(manifest.engines.dsh, ">=0.2.1-rc.1 <0.2.2-0");
   const patch = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
   assert.match(patch, /id: dsh-workflow-kit\s+name: dsh-workflow-kit/);
 });

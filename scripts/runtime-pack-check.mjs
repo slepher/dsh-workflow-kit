@@ -13,6 +13,7 @@ export async function verifyInstalledRuntime(directory, { workflow }) {
   const provider = await load("dsh-codex-app-provider");
   const stateDir = mkdtempSync(join(tmpdir(), "dsh-pack-runtime-"));
   const ctx = new Context();
+  ctx.provide("workingDirectory", { get: session => session.header.cwd });
   try {
     new LlmRuntime(ctx);
     const { default: AgentRegistry } = await load("@deepseek-ai/dsh-agent");

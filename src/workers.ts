@@ -5,6 +5,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-subagent";
+import type {} from "@deepseek-ai/dsh-working-directory";
 import * as subagentInternal from "@deepseek-ai/dsh-subagent/internal";
 import type { NativeExecution, NativeExecutionReport } from "dsh-codex-app-provider";
 import type { WorkflowStore } from "./store.js";
@@ -242,6 +243,22 @@ export class WorkflowWorkers {
 
   run<T>(parent: Agent, signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
     return Promise.resolve(this.request.run({ parent, session: parent.session, signal }, () => { this.assertIdentity(); return operation(); }));
+  }
+
+  /** Release this plugin's resident children when its Host scope unloads. */
+  async dispose(): Promise<void> {
+    const parents = new Map<Agent, SessionId[]>();
+    for (const child of Object.values(this.store.read().nativeChildren ?? {})) {
+      if (child.closed) continue;
+      const parent = this.ctx.agents.get(SessionId(child.parentSessionId));
+      if (parent === undefined) continue;
+      const ids = parents.get(parent) ?? [];
+      ids.push(SessionId(child.id));
+      parents.set(parent, ids);
+    }
+    const results = await Promise.allSettled([...parents].map(([parent, ids]) => this.ctx.subagents.drainChildren(parent, ids)));
+    const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length > 0) throw new AggregateError(errors, "Workflow children could not be released");
   }
 
   assertIdentity(): void {
@@ -779,8 +796,9 @@ export class WorkflowWorkers {
         provider: record.execution.provider, model: record.execution.model, reasoningEffort: ReasoningEffortId(record.execution.reasoningEffort),
         execution: { boundary: { cwd: record.boundary.cwd, writableRoots: record.boundary.writableRoots, network: record.boundary.network } },
       };
-      const created = await this.ctx.subagents.startContinuable({ provider: "spawn", label: record.name, childId: SessionId(id), signal,
-        request: { parent, prompt: openingPrompt(record.execution.developerInstructions, text), agentOptions } });
+      const created = await this.ctx.subagents.startActivation({ provider: "spawn", label: record.name, childId: SessionId(id), signal, delivery: "parent",
+        request: { parent, cwd: record.boundary.cwd, prompt: openingPrompt(record.execution.developerInstructions, text), agentOptions } });
+      void created.result.catch(error => this.ctx.logger.warn("Workflow child %s result failed: %s", id, String(error)));
       messageId = created.messageId;
     } else {
       messageId = await queueHostSubagentPrompt(this.ctx.subagents, parent, SessionId(id), [{ type: "text", text }], { kind: "user" }, signal);
@@ -833,6 +851,7 @@ export class WorkflowWorkers {
     this.managed(managed);
     const worker = await this.get(parentId, id);
     if (worker.state !== "idle" || worker.reports.some(report => report.acknowledgedAt === undefined)) throw new Error("Confirm native terminal execution and acknowledge reports before closing");
+    await this.ctx.subagents.drainChildren(this.parent(parentId), [SessionId(id)]);
     this.store.putNativeChild({ ...this.record(parentId, id), closed: true });
   }
 
@@ -853,7 +872,7 @@ export class WorkflowWorkers {
    * @returns the parent Session's absolute working directory.
    */
   parentCwd(parentId: string): string {
-    const cwd = this.parent(parentId).session.header.cwd;
+    const cwd = this.ctx.workingDirectory.get(this.parent(parentId).session);
     if (typeof cwd !== "string" || cwd === "") throw new Error("The owning Session has no workspace to delegate from");
     return cwd;
   }

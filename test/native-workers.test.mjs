@@ -77,8 +77,8 @@ test("lost native acceptance response is observed without resending; unknown can
   const f = fixture(t);
   await f.run(async () => {
     await f.create("child");
-    const start = f.ctx.subagents.startContinuable;
-    f.ctx.subagents.startContinuable = async spec => { await start(spec); throw new Error("lost acceptance response"); };
+    const start = f.ctx.subagents.startActivation;
+    f.ctx.subagents.startActivation = async spec => { await start(spec); throw new Error("lost acceptance response"); };
     await assert.rejects(f.workers.append("parent", "child", "task", true, "first"), /lost acceptance/);
     await f.workers.append("parent", "child", "task", true, "first");
     assert.equal(f.calls.length, 1);
@@ -108,4 +108,20 @@ test("acceptance and acknowledgement reuse old semantics in workflow storage, an
     f.ctx.agents.set("parent", { ...f.parent });
     assert.throws(() => f.workers.assertIdentity(), /identity changed/);
   });
+});
+
+test("activation captures the lane and parent notification policy independently of the tool signal", async t => {
+  const f = fixture(t);
+  const changed = `${f.parent.session.header.cwd}/current`;
+  f.parent.session.currentCwd = changed;
+  assert.equal(await f.run(() => f.workers.parentCwd("parent")), changed);
+  await f.run(async () => {
+    await f.create("activation-child");
+    await f.workers.append("parent", "activation-child", "task", true);
+    assert.equal(f.calls[0].delivery, "parent");
+    assert.equal(f.calls[0].cwd, f.store.read().nativeChildren["activation-child"].boundary.cwd);
+  });
+  await f.workers.dispose();
+  assert.equal(f.ctx.agents.has("activation-child"), false);
+  assert.equal(f.ctx.agents.has("parent"), true);
 });

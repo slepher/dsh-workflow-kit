@@ -89,7 +89,7 @@ function endpointOf(pathname: string): string | undefined {
  *
  * The route is registered directly against the injecting Context instead of
  * through `connection.rpc.handle`: that registry reads the webServer it needs
- * from the Connection service's own fiber, which declares only `webRuntime`,
+ * from the Connection service's own fiber, which does not declare `webServer`,
  * so the registration throws and the channel is never mounted. Registering here
  * keeps the route and its disposer owned by this fiber and reuses the public
  * Connection trust fence and envelope format.
@@ -146,8 +146,9 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
       path: CHANNEL,
       handler: async (req: RpcRequest, res: RpcResponse) => {
         const connection: HostConnectionHandle = scope.connection;
-        const rejection = connection.requestRejection(req);
-        if (rejection !== undefined) { respond(res, rejection, rejection === 401 ? "unauthorized" : "forbidden"); return; }
+        const admission = connection.admit(req);
+        if ("rejection" in admission) { respond(res, admission.rejection); return; }
+        if (admission.peer.principal.kind !== "owner") { respond(res, 403); return; }
         const endpoint = endpointOf(new URL(req.url ?? "/", "http://dsh.internal").pathname);
         if (req.method !== "POST" || endpoint === undefined) { respond(res, 404); return; }
         if (headerOf(req, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") { respond(res, 415); return; }

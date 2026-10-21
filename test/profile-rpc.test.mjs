@@ -1,91 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { HostConnectionService } from "@deepseek-ai/dsh-client-connection";
 import { installProfileRpc } from "../lib/profile-rpc.js";
 import { fixture } from "./native-fixture.mjs";
 
-// This harness pins a regression a plain object stub cannot see: registering the
-// channel through `connection.rpc.handle` reads the webServer from the Connection
-// service's own fiber, which declares only `webRuntime`, so the registration
-// throws and `/workflow` never mounts (HTTP 405).
 class WebServerStub extends Service {
   prefixes = new Map();
   constructor(ctx) { super(ctx, "webServer"); }
   register(route) {
-    if (this.prefixes.has(route.path)) throw new Error(`duplicate ${route.kind} route ${route.path}`);
+    assert.equal(this.prefixes.has(route.path), false);
     this.prefixes.set(route.path, route);
     return () => this.prefixes.delete(route.path);
   }
 }
-class SimpleStub extends Service {
-  constructor(ctx, name) { super(ctx, name); }
-}
-class SessionsStub extends Service {
-  constructor(ctx, sessions) { super(ctx, "sessions"); this.sessions = sessions; }
-  get(id) { return this.sessions.get(id); }
-}
-class SessionPersistenceStub extends Service {
-  constructor(ctx) { super(ctx, "sessionPersistence"); }
-  async stat(id) { return id === "cold" ? { header: { id } } : undefined; }
-}
 
-/** Compose a real Cordis tree with stub Web/Connection carriers for these tests. */
-async function harness(f) {
+/** Use real HTTP messages and the published Connection bridge, including response cancellation. */
+async function harness(t, f) {
   const app = new Context();
-  await app.plugin({ name: "web-startup", apply: ctx => { ctx.provide("webStartup", {}); } });
-  await app.plugin({ name: "webserver", inject: ["webStartup"], apply: ctx => { new WebServerStub(ctx); } });
-  await app.plugin({ name: "web-runtime", inject: ["webServer"], apply: ctx => { ctx.provide("webRuntime", { trustedHosts: [] }); } });
-  await app.plugin({ name: "connection", inject: ["webRuntime"], apply: ctx => { new HostConnectionService(ctx, [], { isAuthenticated: () => true }); } });
-  for (const name of ["tools", "agents", "subagents", "codexExecution"]) {
-    await app.plugin({ name: `${name}-stub`, apply: ctx => { new SimpleStub(ctx, name); } });
-  }
-  await app.plugin({ name: "sessions-stub", apply: ctx => { new SessionsStub(ctx, f.ctx.sessions); } });
-  await app.plugin({ name: "session-persistence-stub", apply: ctx => { new SessionPersistenceStub(ctx); } });
-  const fiber = app.inject(["tools", "agents", "sessions", "subagents", "codexExecution"],
-    ctx => installProfileRpc(ctx, f.configuration, f.store, () => "a"));
+  await app.plugin({ name: "web-server", apply: ctx => { new WebServerStub(ctx); } });
+  // Match the published Connection plugin: no direct webServer dependency.
+  await app.plugin({ name: "connection", apply: ctx => {
+    new HostConnectionService(ctx, [], {
+      isAuthenticated: req => req.headers.cookie === "test-owner",
+      authenticateApi: () => undefined,
+    });
+  } });
+  app.provide("sessions", f.ctx.sessions);
+  app.provide("sessionPersistence", { async stat(id) { return id === "cold" ? { header: { id } } : undefined; } });
+  const fiber = app.inject(["sessions"], ctx => installProfileRpc(ctx, f.configuration, f.store, () => "a"));
   await fiber;
-  return { app, fiber, route: app.get("webServer").prefixes.get("/workflow") };
+  const server = createServer((req, res) => {
+    const route = app.webServer.prefixes.get("/workflow");
+    if (route === undefined || !req.url.startsWith("/workflow")) { res.writeHead(405); res.end(); return; }
+    route.handler(req, res).catch(error => { res.writeHead(500); res.end(String(error)); });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await app.fiber.dispose(); });
+  return { app, fiber, route: { kind: "prefix", base: `http://127.0.0.1:${server.address().port}` } };
 }
 
-/** One node:http-shaped request whose body yields the given envelope. */
-function request(body, { method = "POST", url, headers = { "content-type": "application/json", host: "127.0.0.1:3080" } } = {}) {
-  const text = typeof body === "string" ? body : JSON.stringify(body);
-  const target = url ?? `/workflow/${typeof body === "object" && body !== null ? String(body.method) : "profiles"}`;
-  // A server `IncomingMessage` carries its own `signal` from Node 24.14, and on
-  // this carrier that signal is already aborted by the time the buffered body
-  // has been consumed. The channel must not read it: doing so rejected every
-  // call with `This operation was aborted`.
-  return { method, url: target, headers, signal: AbortSignal.abort(),
-    async *[Symbol.asyncIterator]() { yield Buffer.from(text); } };
+async function call(route, body, { method = "POST", url, headers = {} } = {}) {
+  const endpoint = url ?? `/workflow/${typeof body === "object" && body !== null ? String(body.method) : "profiles"}`;
+  const response = await fetch(route.base + endpoint, { method,
+    headers: { "content-type": "application/json", cookie: "test-owner", ...headers },
+    ...(method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  let json;
+  try { json = JSON.parse(text); } catch { /* Carrier errors may be plain text. */ }
+  return { status: response.status, headers: Object.fromEntries(response.headers), json };
 }
-/** Capture one node:http-shaped response, including its close event. */
-function response() {
-  const captured = { status: undefined, headers: undefined, body: "" };
-  const listeners = [];
-  const res = {
-    captured,
-    writableEnded: false,
-    on(event, listener) { if (event === "close") listeners.push(listener); return this; },
-    writeHead(status, headers) { captured.status = status; captured.headers = headers; },
-    end(body) { captured.body = body ?? ""; res.writableEnded = true; },
-    /** Close the response before it was written, as a disconnected caller does. */
-    closeEarly() { for (const listener of listeners) listener(); },
-  };
-  return res;
-}
-const call = (route, body, options) => {
-  const res = response();
-  return Promise.resolve(route.handler(request(body, options), res))
-    .then(() => ({ ...res.captured, json: res.captured.body === "" ? undefined : JSON.parse(res.captured.body) }));
-};
 const envelope = (method, payload, rpcId = "test-id") => ({ type: "client-request", rpcId, method, payload });
 
 test("workflow profile channel mounts on the real fiber and answers carrier requests", async t => {
   const f = fixture(t);
   f.parent.session.header.id = "parent";
-  const { app, route } = await harness(f);
-  assert.ok(route, "the /workflow prefix route is registered on the Web server");
+  const { app, route } = await harness(t, f);
+  assert.ok(app.webServer.prefixes.has("/workflow"), "the route mounts without a webServer dependency on Connection");
   assert.equal(route.kind, "prefix");
 
   const profiles = await call(route, envelope("profiles", { sessionId: "parent" }));
@@ -137,74 +110,61 @@ test("workflow profile channel mounts on the real fiber and answers carrier requ
   assert.equal(f.calls.length, 0, "profile operations never start a model or create a child");
 });
 
-test("workflow profile channel keeps connection carrier semantics", async t => {
-  const f = fixture(t);
-  f.parent.session.header.id = "parent";
-  const { route } = await harness(f);
 
-  assert.equal((await call(route, envelope("profiles", { sessionId: "parent" }), { method: "GET" })).status, 404);
-  assert.equal((await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow" })).status, 404);
-  assert.equal((await call(route, envelope("profiles", { sessionId: "parent" }), { headers: { host: "127.0.0.1:3080" } })).status, 415);
-  // A path that is not the channel's `POST /workflow/<endpoint>` shape never dispatches a known endpoint.
-  const nested = await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow/unknown/segment" });
-  assert.equal(nested.json.result.ok, false);
-  const mismatched = await call(route, envelope("profiles", { sessionId: "parent" }), { url: "/workflow/configurations" });
-  assert.equal(mismatched.status, 200);
-  assert.equal(mismatched.json.result.ok, false);
-  assert.match(mismatched.json.result.error.message, /does not match endpoint/);
+test("Connection rejects unauthenticated requests and malformed carrier input", async t => {
+  const f = fixture(t);
+  const { route } = await harness(t, f);
+  assert.equal((await call(route, envelope("configurations", {}), { headers: { cookie: "" } })).status, 401);
+  assert.equal((await call(route, envelope("configurations", {}), { method: "GET" })).status, 404);
   assert.equal((await call(route, "not json")).status, 400);
-  const badEnvelope = await call(route, { rpcId: "keep-me", method: "profiles" });
-  assert.equal(badEnvelope.status, 400);
-  assert.equal(badEnvelope.json.rpcId, "keep-me");
-  const forbidden = await call(route, envelope("profiles", { sessionId: "parent" }), { headers: { "content-type": "application/json", host: "attacker.example" } });
-  assert.ok(forbidden.status === 401 || forbidden.status === 403, `untrusted host rejected, got ${forbidden.status}`);
+  assert.equal((await call(route, { rpcId: "keep-me" })).json.result.ok, false);
+  const mismatch = await call(route, envelope("configurations", {}), { url: "/workflow/profiles" });
+  assert.equal(mismatch.json.result.ok, false);
+  assert.match(mismatch.json.result.error.message, /does not match endpoint/);
 });
 
-test("an aborted carrier request signal never cancels a channel operation", async t => {
-  const f = fixture(t);
-  f.parent.session.header.id = "parent";
-  const { route } = await harness(f);
-
-  // Node 24.14+ gives a server IncomingMessage its own `signal`, and this
-  // carrier hands it over already aborted once the buffered body has been
-  // consumed. That signal is the message's own lifetime, not this channel's
-  // cancellation, so the request is still served.
-  const answered = await call(route, envelope("configurations", {}));
-  assert.equal(answered.json.result.ok, true);
-  assert.equal(answered.json.result.value.configs.length, 2);
-
-  // The endpoint's own validation still reports its own error, proving the
-  // carrier signal aborted nothing before the operation ran.
-  const mismatched = await call(route, envelope("configurations", {}), { url: "/workflow/nope" });
-  assert.equal(mismatched.json.result.ok, false);
-  assert.match(mismatched.json.result.error.message, /does not match endpoint/);
-});
-
-test("profile selections retain submission order across asynchronous Session validation", async t => {
+test("only owner requests enter the ordered configuration queue", async t => {
   const f = fixture(t);
   let handler, release;
   const gate = new Promise(resolve => { release = resolve; });
   const ctx = { sessions: new Map(), inject(_services, apply) { apply(this); }, effect(register) { return register(); },
     get() { return { async stat(id) { await gate; return { header: { id } }; } }; },
-    connection: { requestRejection() { return undefined; } },
-    webServer: { register(route) { handler = (endpoint, payload) => route.handler(
-      { method: "POST", url: `/workflow/${endpoint}`, headers: { "content-type": "application/json", host: "127.0.0.1:3080" }, signal: AbortSignal.abort(),
-        async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(envelope(endpoint, payload))) } },
-      response()); return () => {}; } },
+    connection: { admit(req) { return { peer: { principal: { kind: req.principal } } }; } },
+    webServer: { register(route) { handler = async (endpoint, payload, signal, peer) => {
+      const body = Buffer.from(JSON.stringify(envelope(endpoint, payload)));
+      const req = { principal: peer.principal.kind, method: "POST", url: `/workflow/${endpoint}`,
+        headers: { "content-type": "application/json" }, signal: AbortSignal.abort(),
+        async *[Symbol.asyncIterator]() { yield body; } };
+      let status, result;
+      const res = { writableEnded: false, on(_event, listener) { if (signal.aborted) listener(); },
+        writeHead(value) { status = value; }, end(value) { result = value; this.writableEnded = true; } };
+      await route.handler(req, res);
+      if (status === 403) return { ok: false, error: { code: "workflow/forbidden" } };
+      if (status === 413) return { ok: false, error: { code: "HTTP_413" } };
+      return JSON.parse(result).result;
+    }; return () => {}; } },
   };
   installProfileRpc(ctx, f.configuration, f.store, () => "a");
-  const first = handler("select-profile", { sessionId: "cold", profileId: "b" });
-  const second = handler("select-profile", { sessionId: "cold", profileId: "a" });
+  const signal = new AbortController().signal, owner = { principal: { kind: "owner" } };
+  const forbidden = await handler("select-profile", { sessionId: "cold", profileId: "b" }, signal, { principal: { kind: "agent" } });
+  assert.equal(forbidden.error.code, "workflow/forbidden");
+  assert.equal(f.store.selectedProfile("cold"), undefined);
+  const oversized = await handler("profiles", { sessionId: "x".repeat(8 * 1024 * 1024) }, signal, owner);
+  assert.equal(oversized.error.code, "HTTP_413");
+  const first = handler("select-profile", { sessionId: "cold", profileId: "b" }, signal, owner);
+  const second = handler("select-profile", { sessionId: "cold", profileId: "a" }, signal, owner);
   release();
-  await Promise.all([first, second]);
+  assert.ok((await first).ok && (await second).ok);
+  assert.equal(f.store.selectedProfile("cold"), "a");
+  const aborted = await handler("select-profile", { sessionId: "cold", profileId: "b" }, AbortSignal.abort(), owner);
+  assert.equal(aborted.ok, false);
   assert.equal(f.store.selectedProfile("cold"), "a");
 });
 
-test("disposing the workflow fiber releases the channel", async t => {
+test("disposing the workflow fiber releases the Connection channel", async t => {
   const f = fixture(t);
-  const { app, fiber } = await harness(f);
-  assert.ok(app.get("webServer").prefixes.has("/workflow"));
+  const { app, fiber } = await harness(t, f);
+  assert.ok(app.webServer.prefixes.has("/workflow"));
   await fiber.dispose();
-  await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(app.get("webServer").prefixes.has("/workflow"), false, "the route leaves with its owning fiber");
+  assert.equal(app.webServer.prefixes.has("/workflow"), false);
 });

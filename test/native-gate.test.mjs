@@ -49,7 +49,8 @@ async function host(t, options = {}) {
     lanes: [], attempts: [] });
   seed.save();
 
-  const ctx = new Context(); t.after(() => ctx.fiber.dispose());
+  const ctx = new Context();
+  ctx.provide("workingDirectory", { get: session => session.currentCwd ?? session.header.cwd }); t.after(() => ctx.fiber.dispose());
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
   const handlers = new Map(), binds = [];
   class CodexExecution extends Service { constructor(scope) { super(scope, "codexExecution"); } async read() { return undefined; } }

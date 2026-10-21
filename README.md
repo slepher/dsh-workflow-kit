@@ -36,8 +36,8 @@ Codex execution is not implemented here. Children are DSH-native subagent Sessio
 | Node.js | `>=22.19.0` | `engines.node` in `package.json` |
 | Python 3 | `python3` on `PATH` | `src/workflow.ts:195` runs `python3 scripts/workflowctl.py` |
 | Git | `git` on `PATH` | `src/workflow.ts:213` |
-| `dsh-codex-app-provider` | `0.1.1`, loaded first | `peerDependencies` in `package.json` |
-| DSH releases | `0.1.7-rc.2` and `0.2.0-rc.2` | `dsh.compatibility.dshReleases` in `package.json` |
+| `dsh-codex-app-provider` | `0.2.1`, loaded first | `peerDependencies` in `package.json` |
+| DSH host range | `>=0.2.1-rc.1 <0.2.2-0` | `engines.dsh` in `package.json`; live results in `dsh.compatibility.dshReleases` |
 
 Python 3 and Git are runtime requirements, not just build requirements: adopting a generation exports the plan and validating a recorded result both shell out to `scripts/workflowctl.py`, and lane creation and candidate diffs shell out to `git`.
 
@@ -90,7 +90,7 @@ Python 3 and Git are runtime requirements, not just build requirements: adopting
 | Source | What arrives | Build on install |
 | --- | --- | --- |
 | npm — `dsh plugin add <package>` | `lib/` built at publish time | none |
-| tarball — `dsh plugin add ./dsh-workflow-kit-0.1.1.tgz` | the same | none |
+| tarball — `dsh plugin --profile <profile> add ./dsh-workflow-kit-0.2.1.tgz` | the same | none |
 | git — `dsh plugin add github:slepher/dsh-workflow-kit#<sha>` | **sources only** | `prepare` |
 
 A git install runs `prepare` (`scripts/prepare-build.mjs`), which transpiles the Host half and bundles the client **without a type checker**: the declarations this package's `types` field names are a development and publishing artifact and are not emitted on that path. It is self-contained — it reads nothing outside the fetched package — and pnpm ≥10 refuses to run it until the exact spec is allowed, so the first `add` fails and pnpm prints the line to copy into the profile's `pnpm-workspace.yaml`:
@@ -218,15 +218,17 @@ The client half registers:
 
 ## Compatibility
 
-`package.json` declares the DSH releases this build is checked against:
+The DSH host range is **`>=0.2.1-rc.1 <0.2.2-0`**: rc.1 is the minimum; alpha releases and 0.2.2 are excluded. Development dependencies and the lockfile remain pinned to `0.2.1-rc.2`. Shared host services remain peer dependencies. `dsh.compatibility.dshReleases` records verified releases and does not replace the installation gate.
 
-```json
-"dsh": { "compatibility": { "dshReleases": { "0.1.7-rc.2": "compatible", "0.2.0-rc.2": "compatible" } } }
+Update both plugins together to `0.2.1`. There are no older DSH API fallbacks. The `workingDirectory` service supplies the current execution directory independently of the Session's original project. An existing Codex thread keeps its directory; create a new Session/child after changing it.
+
+After building both plugins, run the local folder preflight to check version rejection, entry points and localized resources. It installs no DSH runtime, changes no profile and downloads no Office components:
+
+```bash
+node ../dsh-codex-app-provider/scripts/verify-dsh-compat.mjs
 ```
 
-Every DSH Host package is an **optional `*` peer dependency** (`peerDependencies` plus `peerDependenciesMeta`), so one build can load on each listed release; `dsh-codex-app-provider` is the exception — an optional peer pinned to `0.1.1`. The checked-in `devDependencies` pin the single generation used for type checking and tests (`0.1.7-rc.2`).
-
-An isolated install brings its own Host generation: `scripts/pack-check.mjs` requires the `@deepseek-ai/dsh-*` devDependency specs to name exactly one generation, installs `@deepseek-ai/dsh@<that generation>` together with the freshly packed provider and (for the workflow combination) this package, and overrides `dsh-codex-app-provider` to the packed tarball.
+Then add the provider folder followed by the workflow folder through the existing DSH plugin page. Verify activation, settings reads/writes and child continuation there; preflight alone does not establish live compatibility.
 
 ## Development
 

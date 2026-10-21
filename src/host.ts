@@ -8,6 +8,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
 import type {} from "dsh-codex-app-provider";
 import type {} from "@deepseek-ai/dsh-settings";
+import type {} from "@deepseek-ai/dsh-working-directory";
 // Type-only: the Loader's `loader/volatile-update` instance event.
 import type {} from "@deepseek-ai/cordis-plugin-loader";
 import { installProfileRpc } from "./profile-rpc.js";
@@ -25,7 +26,7 @@ export const name = "dsh-workflow-kit";
  * rather than optional: a package set without it cannot gate a Codex child, and
  * starting one ungated would silently run the broadest authority there is.
  */
-export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution", "codexToolGate"];
+export const inject = ["tools", "agents", "sessions", "subagents", "codexExecution", "codexToolGate", "workingDirectory"];
 
 /**
  * The plugin's entry configuration.
@@ -164,7 +165,7 @@ function nativeGate(ctx: Context, store: WorkflowStore, workflow: Workflow, exec
   // A Session with neither is not gated and keeps its previous behaviour.
   const binding = store.read().nativeChildren?.[sessionId]?.gate ?? workflow.managerBinding(sessionId);
   if (binding === undefined) return undefined;
-  const cwd = typeof session.header?.cwd === "string" ? session.header.cwd : "";
+  const cwd = ctx.workingDirectory.get(session);
   const decision = workflowGateHandler(binding, { source: "dsh", sessionId, callId: String(execution.callId),
     cwd, toolName: execution.name, toolArgs: execution.arguments });
   return decision.kind === "deny" ? decision.reason : undefined;
@@ -214,6 +215,7 @@ export function apply(ctx: Context, config?: Config): void {
   ctx.on("loader/volatile-update", () => { syncStored(); });
   installProfileRpc(ctx, catalog, store, defaultProfile);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, workflowSkillDir, implementationStandardDir);
+  ctx.effect(() => () => consumer.dispose(), "dsh-workflow-kit: managed children");
   const workflow = new Workflow(consumer, workflowSkillDir);
   // The gate is installed before any session can be started: the one business
   // handler is registered with the provider first, then the DSH-native guard.

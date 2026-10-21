@@ -16,6 +16,7 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   const ctx = new Context(); t.after(() => ctx.fiber.dispose());
   await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
 
+  ctx.provide("workingDirectory", { get: session => session.currentCwd ?? session.header.cwd });
   let executionReads = 0, routes = 0;
   const handlers = new Map(), binds = [];
   class CodexExecution extends Service {
@@ -75,8 +76,7 @@ test("workflow host leaves the ordinary consumer untouched and activates managed
   const missingParent = await tools.execute({ signal: new AbortController().signal, callId: "no-parent", name: "codex_workflow", arguments: { action: "status" } });
   assert.equal(missingParent.isError, true);
   assert.match(missingParent.content[0].text, /live parent agent/);
-  assert.deepEqual([...ctx.connection.channels.keys()], [], "the browser profile channel is not registered through Connection's own fiber");
-  assert.equal(routes, 1, "host registers the workflow browser profile route on the Web server");
+  assert.equal(routes, 1, "the workflow fiber owns its browser route");
   assert.equal(existsSync(join(stateDir, "orchestration.json")), false, "read-only status writes no orchestration state file");
 
   await plugin.dispose();

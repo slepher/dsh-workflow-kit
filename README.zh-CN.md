@@ -36,8 +36,8 @@ Codex 执行不由本包实现。子 Session 是通过 `ctx.subagents` 创建的
 | Node.js | `>=22.19.0` | `package.json` 的 `engines.node` |
 | Python 3 | `PATH` 中的 `python3` | `src/workflow.ts:195` 调用 `python3 scripts/workflowctl.py` |
 | Git | `PATH` 中的 `git` | `src/workflow.ts:213` |
-| `dsh-codex-app-provider` | `0.1.1`，且先加载 | `package.json` 的 `peerDependencies` |
-| DSH 版本 | `0.1.7-rc.2` 与 `0.2.0-rc.2` | `package.json` 的 `dsh.compatibility.dshReleases` |
+| `dsh-codex-app-provider` | `0.2.1`，且先加载 | `package.json` 的 `peerDependencies` |
+| DSH 宿主范围 | `>=0.2.1-rc.1 <0.2.2-0` | `package.json` 的 `engines.dsh`；实测结果记录在 `dsh.compatibility.dshReleases` |
 
 Python 3 与 Git 是运行时要求，而不只是构建要求：采纳 generation 时导出 plan、以及校验已记录结果时都会调用 `scripts/workflowctl.py`；创建 lane 与生成候选 diff 会调用 `git`。
 
@@ -90,7 +90,7 @@ Python 3 与 Git 是运行时要求，而不只是构建要求：采纳 generati
 | 来源 | 到手内容 | 安装时构建 |
 | --- | --- | --- |
 | npm —— `dsh plugin add <package>` | 发布时已构建的 `lib/` | 无 |
-| tarball —— `dsh plugin add ./dsh-workflow-kit-0.1.1.tgz` | 同上 | 无 |
+| tarball —— `dsh plugin --profile <profile> add ./dsh-workflow-kit-0.2.1.tgz` | 同上 | 无 |
 | git —— `dsh plugin add github:slepher/dsh-workflow-kit#<sha>` | **只有源码** | `prepare` |
 
 git 安装会执行 `prepare`（`scripts/prepare-build.mjs`）：它转译 Host、打包客户端，**不做类型检查**——本包 `types` 字段指向的声明属于开发与发布产物，该路径不产出。该脚本自包含（不读取包外任何内容）；pnpm ≥10 在放行之前拒绝执行 git 依赖的构建脚本，因此第一次 `add` 必然失败，pnpm 会打印出要复制进 profile `pnpm-workspace.yaml` 的那一行：
@@ -218,15 +218,17 @@ Host 只注册一个面向模型的工具：`codex_workflow`（`src/host.ts:170`
 
 ## 兼容性
 
-`package.json` 声明了本构建所校验的 DSH 版本：
+DSH 宿主范围为 **`>=0.2.1-rc.1 <0.2.2-0`**，最低版本是 rc.1，不包含 alpha 或 0.2.2。开发依赖与 lockfile 仍固定为 `0.2.1-rc.2`。共享宿主服务使用 peer dependency，不另带旧代宿主实例。`dsh.compatibility.dshReleases` 只记录通过联合验证的版本，不代替安装门禁。
 
-```json
-"dsh": { "compatibility": { "dshReleases": { "0.1.7-rc.2": "compatible", "0.2.0-rc.2": "compatible" } } }
+两个插件协调使用 `0.2.1`。升级时同时更新 provider 和 workflow；不提供旧 DSH API 回退。当前执行目录由 `workingDirectory` 服务提供，与 Session 的原始项目目录分开。已有 Codex thread 不随目录切换而移动；目录改变后应新建会话/child。
+
+构建两个插件后，运行本地文件夹预检，检查版本门禁、入口与本地化资源。此步骤不安装 DSH、不修改 profile，也不会下载 Office 运行库：
+
+```bash
+node ../dsh-codex-app-provider/scripts/verify-dsh-compat.mjs
 ```
 
-所有 DSH Host 包都是**可选的 `*` peer dependency**（`peerDependencies` 与 `peerDependenciesMeta`），因此一份构建可以加载到列表中的每个版本上；例外是 `dsh-codex-app-provider`——它是被固定为 `0.1.1` 的可选 peer。仓库中检入的 `devDependencies` 固定了用于类型检查与测试的同一代版本（`0.1.7-rc.2`）。
-
-隔离安装会自带 Host 代版本：`scripts/pack-check.mjs` 要求 `@deepseek-ai/dsh-*` 的 devDependency 说明只对应一个代版本，安装 `@deepseek-ai/dsh@<该代版本>` 以及新打包的 provider（workflow 组合还包含本包），并把 `dsh-codex-app-provider` override 到刚打出的 tarball。
+然后在现有 DSH 的插件页依次添加 provider 与 workflow 目录，确认激活成功、设置可读写及子代理可续跑。预检通过不能代替这一步。
 
 ## 开发
 
