@@ -7,7 +7,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type { WorkflowConfiguration } from "./configuration.js";
 import type { WorkflowStore } from "./store.js";
 import { bindCodingStrategy, isStrategy, type CodingStrategy } from "./strategy.js";
-import type { StrategyView } from "./profile-types.js";
+import type { RouteGroupView, StrategyView } from "./profile-types.js";
 
 const CHANNEL = "/workflow";
 /** The browser carrier buffers one JSON body; profile payloads carry Session addresses and profile ids. */
@@ -94,13 +94,19 @@ function endpointOf(pathname: string): string | undefined {
  * keeps the route and its disposer owned by this fiber and reuses the public
  * Connection trust fence and envelope format.
  */
-export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, store: WorkflowStore, defaultProfile: () => string | undefined): void {
+export function installProfileRpc(
+  ctx: Context,
+  catalog: WorkflowConfiguration,
+  store: WorkflowStore,
+  defaultProfile: () => string | undefined,
+  readRouteCatalog: () => Promise<readonly RouteGroupView[]>,
+): void {
   ctx.inject(["connection", "webServer"], scope => {
     let queue: Promise<unknown> = Promise.resolve();
     const dispatch = (endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult<unknown>> => {
       const operation = queue.then(async () => {
         signal.throwIfAborted();
-        if (!["configurations", "profiles", "select-profile", "select-strategy"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
+        if (!["configurations", "catalog", "profiles", "select-profile", "select-strategy"].includes(endpoint)) throw new Error("Unknown workflow endpoint");
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid workflow request");
         const value = payload as Record<string, unknown>;
         // Built-in configurations are package content and the stored layer is
@@ -108,6 +114,13 @@ export function installProfileRpc(ctx: Context, catalog: WorkflowConfiguration, 
         if (endpoint === "configurations") {
           if (Object.keys(value).length > 0) throw new Error("Invalid workflow request");
           return { defaultConfig: defaultProfile() ?? null, ...catalog.view() };
+        }
+        // A route's own catalog needs no Session: the settings page reads it
+        // once to keep offering models the main-Session menu may hide.
+        if (endpoint === "catalog") {
+          if (Object.keys(value).length > 0) throw new Error("Invalid workflow request");
+          signal.throwIfAborted();
+          return { groups: await readRouteCatalog() };
         }
         const fields = endpoint === "profiles" ? ["sessionId"] : endpoint === "select-profile" ? ["sessionId", "profileId"] : ["sessionId", "strategy"];
         if (Object.keys(value).some(key => !fields.includes(key)) || typeof value.sessionId !== "string" || !value.sessionId) throw new Error("A native Session address is required; caller identities are not accepted");

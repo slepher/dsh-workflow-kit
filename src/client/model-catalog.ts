@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 // Type-only: pulls the ctx.remote Context merge into this browser program.
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
+import type { WorkflowRpc } from "./rpc.js";
 
 /** One selectable model with the efforts its adapter advertises. */
 export interface ModelOption {
@@ -27,11 +28,14 @@ export interface ModelOptions {
 /**
  * Read the adapter-owned model catalog at root scope — the same wire read the
  * native composer model seat performs, so the routes offered per role match the
- * ones the deployment can serve, grouped the way that seat groups them.
+ * ones the deployment can serve, grouped the way that seat groups them. A route
+ * the composer menu hides (`allowMainSession: false`) still has to be selectable
+ * for workflow roles, so the plugin's own channel contributes those groups too.
  * @param ctx - client context carrying the remote session namespace.
+ * @param rpc - the plugin's own channel, which carries the hidden-route catalog.
  * @returns advertised provider groups and provider-failure state.
  */
-export async function loadModelOptions(ctx: Context): Promise<ModelOptions> {
+export async function loadModelOptions(ctx: Context, rpc?: WorkflowRpc): Promise<ModelOptions> {
   const response = await ctx.remote.session.modelCatalog();
   if (!response.ok) throw new Error(response.error.message);
   const groups: ModelGroup[] = response.value.groups.map(group => ({
@@ -44,5 +48,28 @@ export async function loadModelOptions(ctx: Context): Promise<ModelOptions> {
       ...(model.reasoning?.defaultEffort === undefined ? {} : { defaultEffort: model.reasoning.defaultEffort }),
     })),
   }));
-  return { groups, partial: response.value.failures.length > 0 };
+  let partial = response.value.failures.length > 0;
+  if (rpc !== undefined) {
+    try {
+      const hidden = await rpc.catalog();
+      for (const group of hidden.groups ?? []) {
+        if (groups.some(existing => existing.provider === group.provider)) continue;
+        groups.push({
+          provider: group.provider,
+          name: group.name,
+          models: group.models.map(model => ({
+            model: model.id,
+            name: model.name,
+            efforts: model.efforts,
+            ...(model.defaultEffort === undefined ? {} : { defaultEffort: model.defaultEffort }),
+          })),
+        });
+      }
+    } catch {
+      // The hidden-route read is an addition to a catalog that already loaded;
+      // losing it marks the read partial instead of failing the page.
+      partial = true;
+    }
+  }
+  return { groups, partial };
 }

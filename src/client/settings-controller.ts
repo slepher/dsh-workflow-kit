@@ -102,7 +102,7 @@ export class WorkflowSettingsController {
     // A failed read leaves the request open so the next refresh retries it.
     if (!this.catalogRequested) {
       if (this.state.catalog === "idle") this.publish({ catalog: "loading" });
-      void loadModelOptions(this.ctx).then(
+      void loadModelOptions(this.ctx, this.rpc).then(
         value => {
           this.catalogRequested = true;
           this.publish({ catalog: "ready", catalogError: null, groups: value.groups, catalogPartial: value.partial });

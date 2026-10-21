@@ -1,11 +1,13 @@
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type { CodingStrategy } from "../constants.js";
-import type { ConfigurationsView, ProfileAction, ProfileView } from "../profile-types.js";
+import type { ConfigurationsView, ProfileAction, ProfileView, RouteCatalogView } from "../profile-types.js";
 
 /** Browser calls this plugin makes on its own `/workflow` channel. */
 export interface WorkflowRpc {
   /** Read every effective configuration; requires no Session. */
   configurations(signal?: AbortSignal): Promise<ConfigurationsView>;
+  /** Read model groups a route publishes even while the Host model menu hides it. */
+  catalog(signal?: AbortSignal): Promise<RouteCatalogView>;
   /** Read the catalog plus one native Session's recorded selection and strategy facts. */
   profiles(sessionId: string, signal?: AbortSignal): Promise<ProfileView>;
   /** Record one configuration as that native Session's selection. */
@@ -27,6 +29,7 @@ export function createWorkflowRpc(connection: ConnectionHandle): WorkflowRpc {
   };
   return {
     configurations: signal => call<ConfigurationsView>("configurations", {}, signal),
+    catalog: signal => call<RouteCatalogView>("catalog", {}, signal),
     profiles: (sessionId, signal) => call<ProfileView>("profiles", { sessionId }, signal),
     selectProfile: (sessionId, profileId, signal) =>
       call<ProfileView>("select-profile", { sessionId, profileId }, signal),

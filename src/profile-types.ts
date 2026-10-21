@@ -43,6 +43,32 @@ export interface StrategyView {
   fixed: boolean;
 }
 
+/** One model the route's own catalog advertises, in settings-page terms. */
+export interface RouteModelView {
+  id: string;
+  name: string;
+  efforts: readonly { id: string; name: string }[];
+  defaultEffort?: string;
+}
+
+/**
+ * One provider group a route publishes for the settings page.
+ *
+ * The composer model menu can hide a route (`allowMainSession: false`) while
+ * workflow roles still have to select it, so the provider exposes its catalog
+ * through `ctx.codexExecution` and the page merges these groups in itself.
+ */
+export interface RouteGroupView {
+  provider: string;
+  name: string;
+  models: readonly RouteModelView[];
+}
+
+/** One catalog read on the plugin's own channel: groups the Host model menu may hide. */
+export interface RouteCatalogView {
+  groups: readonly RouteGroupView[];
+}
+
 /** Session-scoped read: the catalog plus that native Session's recorded selection and strategy. */
 export interface ProfileView extends CatalogView {
   selectedProfile: string | null;
@@ -55,7 +81,7 @@ export interface ConfigurationsView extends CatalogView {
 }
 
 /** Endpoints the browser half calls on the `/workflow` channel. */
-export type ProfileAction = "configurations" | "profiles" | "select-profile" | "select-strategy";
+export type ProfileAction = "configurations" | "catalog" | "profiles" | "select-profile" | "select-strategy";
 
 /** One stored role override as this browser writes it. */
 export type StoredRoleValue = { provider: string; model: string; reasoningEffort: string };

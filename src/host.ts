@@ -19,6 +19,7 @@ import { Workflow } from "./workflow.js";
 import { ROLES } from "./roles.js";
 import { WorkflowWorkers } from "./workers.js";
 import { installedCodexToolGate, workflowGateHandler, WORKFLOW_GATE_HOOK } from "./gate.js";
+import type { RouteGroupView } from "./profile-types.js";
 
 export const name = "dsh-workflow-kit";
 /**
@@ -213,7 +214,19 @@ export function apply(ctx: Context, config?: Config): void {
   };
   syncStored();
   ctx.on("loader/volatile-update", () => { syncStored(); });
-  installProfileRpc(ctx, catalog, store, defaultProfile);
+  // The provider hides its route from the main-Session menu by default, so the
+  // settings page reads that route's own catalog through the Host capability
+  // instead of the composer's model catalog. A provider that cannot project one
+  // contributes no group, and a failed read is not a settings-page failure.
+  const readRouteCatalog = async (): Promise<readonly RouteGroupView[]> => {
+    try {
+      const group = await ctx.codexExecution.catalog?.();
+      return group === undefined ? [] : [group];
+    } catch {
+      return [];
+    }
+  };
+  installProfileRpc(ctx, catalog, store, defaultProfile, readRouteCatalog);
   const consumer = new WorkflowWorkers(ctx, store, catalog, defaultProfile, workflowSkillDir, implementationStandardDir);
   ctx.effect(() => () => consumer.dispose(), "dsh-workflow-kit: managed children");
   const workflow = new Workflow(consumer, workflowSkillDir);

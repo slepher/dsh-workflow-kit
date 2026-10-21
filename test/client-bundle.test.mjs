@@ -63,6 +63,13 @@ const catalogValue = {
   failures: [],
 };
 
+/** One model group the workflow settings page reads on its own channel. */
+const hiddenRouteGroup = {
+  provider: "codex-app",
+  name: "codex app",
+  models: [{ id: "gpt-6-astra", name: "Astra", efforts: [{ id: "high", name: "High" }], defaultEffort: "high" }],
+};
+
 /** Compose the client context the shipped half expects, recording every observable effect. */
 function harness() {
   const calls = [], mutations = [], rows = [], effects = [];
@@ -71,7 +78,10 @@ function harness() {
     rpc: {
       call(path, method, payload) {
         calls.push({ path, method, payload });
-        return Promise.resolve({ ok: true, value: { selectedProfile: null, defaultConfig: null, configs: [], roleNames: [] } });
+        const value = method === "catalog"
+          ? { groups: [hiddenRouteGroup] }
+          : { selectedProfile: null, defaultConfig: null, configs: [], roleNames: [] };
+        return Promise.resolve({ ok: true, value });
       },
     },
   };
@@ -119,9 +129,11 @@ test("shipped client registers the composer picker and the Workflow settings pag
   const face = picker.inject();
   assert.deepEqual(Object.keys(face), ["request"]);
   await face.request("parent", "profiles");
-  assert.deepEqual(detached(calls.at(-1)), { path: "/workflow", method: "profiles", payload: { sessionId: "parent" } });
+  assert.deepEqual(detached(calls.filter(call => call.method === "profiles").at(-1)),
+    { path: "/workflow", method: "profiles", payload: { sessionId: "parent" } });
   await face.request("parent", "select-profile", "gpt-workflow");
-  assert.deepEqual(detached(calls.at(-1)), { path: "/workflow", method: "select-profile", payload: { sessionId: "parent", profileId: "gpt-workflow" } });
+  assert.deepEqual(detached(calls.filter(call => call.method === "select-profile").at(-1)),
+    { path: "/workflow", method: "select-profile", payload: { sessionId: "parent", profileId: "gpt-workflow" } });
 
   const section = rows.find(row => row.name === "settings.section");
   assert.equal(section.id, "workflow");
@@ -131,6 +143,13 @@ test("shipped client registers the composer picker and the Workflow settings pag
   const settings = section.inject();
   assert.equal(typeof settings.hooks.workflowSettings.getSnapshot, "function");
   assert.equal(typeof settings.hooks.workflowSettings.subscribe, "function");
+  // The provider hides its route from the composer catalog by default, so the
+  // page reads that route's own groups on the plugin channel and merges them.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(calls.some(call => call.path === "/workflow" && call.method === "catalog"),
+    "the settings page asks for the route's own catalog");
+  const merged = settings.hooks.workflowSettings.getSnapshot().groups;
+  assert.ok(merged.some(group => group.provider === "codex-app"), "the hidden route's group is offered to role editors");
   await settings.setRole("gpt-workflow", "planner", { provider: "codex-app", model: "gpt-6-astra", reasoningEffort: "high" });
   assert.deepEqual(detached(mutations.at(-1)), [{ op: "set", path: ["configs", "gpt-workflow", "roles", "planner"],
     value: { provider: "codex-app", model: "gpt-6-astra", reasoningEffort: "high" } }]);
