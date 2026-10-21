@@ -15,7 +15,10 @@ export function prepareLocal({ root = defaultRoot, run = spawnSync } = {}) {
     if (!spec.endsWith(".tgz") || !existsSync(resolve(root, spec.slice(5)))) throw new Error(`Build and pack the coordinated dependency before preparation: ${name} (${spec})`);
   }
   try {
-    const result = run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, stdio: "inherit" });
+    // Node cannot spawn a `.cmd` shim directly on Windows (EINVAL); the shell is
+    // what resolves npm.cmd there. POSIX keeps the plain executable.
+    const shell = process.platform === "win32" ? { shell: true } : {};
+    const result = run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, stdio: "inherit", ...shell });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`npm ci failed (${result.status ?? "signal"})`);
   } finally {
