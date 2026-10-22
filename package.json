@@ -26,7 +26,8 @@
   ],
   "scripts": {
     "build": "node scripts/build-skills.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
-    "prepare": "node scripts/prepare-build.mjs",
+    "prepare": "node scripts/release-build.mjs",
+    "prepack": "node scripts/release-build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "dev": "node scripts/dev.mjs",
     "pack:check": "node scripts/pack-check.mjs",

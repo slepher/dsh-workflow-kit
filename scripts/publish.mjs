@@ -87,6 +87,10 @@ export async function watchPublication(development = false) {
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv.includes("--watch")) await watchPublication();
-    else await publish();
+    // pnpm runs a package's `publish` script while preparing a git install,
+    // where the provider declarations this staged build type-checks against
+    // are absent. Fall back to the self-contained build there.
+    else if (existsSync(join(root, "node_modules", "dsh-codex-app-provider", "lib", "index.d.ts"))) await publish();
+    else await import("./prepare-build.mjs");
   } catch (error) { console.error(String(error)); process.exitCode = 1; }
 }
