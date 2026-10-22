@@ -242,10 +242,10 @@ All commands run from the repository root.
 | `npm run pack:check` | Packs this package and the provider in a temporary directory, installs provider-only and provider+workflow combinations at the pinned Host generation, and mounts the real Cordis runtime without calling a model or a browser. It retains the temporary directory and prints its path. The provider checkout is `../dsh-codex-app-provider` unless `DSH_CODEX_APP_PROVIDER_CHECKOUT` names another one. |
 | `npm run dev` | Linux only. `--profile <name>` (default `workflow-dev`), `--app-provider <checkout>` (or `DSH_CODEX_APP_PROVIDER_CHECKOUT`), and repeatable `--patch <file>` overlays. Requires the profile to load `dsh-codex-app-provider` then `dsh-workflow-kit`, an absolute provider `stateDir`, and HMR roots covering both checkouts' `lib`. It builds both checkouts, starts both watchers, and either starts one `dsh` Host on port 0 or reuses a live same-profile Host (`/proc`-based owner inspection). A reused Host is left running on exit. |
 | `npm run dev:host` | Starts or checks a dev Host without the long-lived watchers. `--profile` (default `workflow-kit-dev`), `--port` (default `3080`), `--check` to verify only. |
-| `npm run publish` | Builds in a staging directory and replaces `lib/` in one rename, so a watching Host never sees a half-written bundle. |
-| `npm run publish:watch` | Same, republishing on every change under `src/`. |
+| `npm run release` | Builds in a staging directory and replaces `lib/` in one rename, so a watching Host never sees a half-written bundle. |
+| `npm run release:watch` | Same, republishing on every change under `src/`. |
 
-**Watched-publish behaviour.** `scripts/watch.mjs` (used by `npm run dev`) builds in `.watch/publish-build` and atomically replaces `lib/`. It also watches the provider's `src/`: any provider source change pauses publication until the Host is restarted. `npm run publish:watch` publishes complete staged builds the same way, driven only by this package's `src/`.
+**Watched-publish behaviour.** `scripts/watch.mjs` (used by `npm run dev`) builds in `.watch/publish-build` and atomically replaces `lib/`. It also watches the provider's `src/`: any provider source change pauses publication until the Host is restarted. `npm run release:watch` publishes complete staged builds the same way, driven only by this package's `src/`.
 
 Design records for the strategy and prompt wiring live in [upgrade.md](upgrade.md) and [docs/upgrade-prompts.md](docs/upgrade-prompts.md).
 

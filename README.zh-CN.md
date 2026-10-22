@@ -242,10 +242,10 @@ node ../dsh-codex-app-provider/scripts/verify-dsh-compat.mjs
 | `npm run pack:check` | 在临时目录中打包本包与 provider，以固定的 Host 代版本安装 provider-only 与 provider+workflow 两种组合，并挂载真实 Cordis 运行时，不调用模型，也不使用浏览器。它会保留临时目录并打印其路径。provider checkout 默认为 `../dsh-codex-app-provider`，可用 `DSH_CODEX_APP_PROVIDER_CHECKOUT` 指定其他位置。 |
 | `npm run dev` | 仅 Linux。支持 `--profile <name>`（默认 `workflow-dev`）、`--app-provider <checkout>`（或 `DSH_CODEX_APP_PROVIDER_CHECKOUT`），以及可重复的 `--patch <file>` overlay。要求 profile 依次加载 `dsh-codex-app-provider` 与 `dsh-workflow-kit`、provider 的 `stateDir` 为绝对路径，且 HMR roots 覆盖两个 checkout 的 `lib`。它会构建两个 checkout、启动两个 watcher，然后在端口 0 启动一个 `dsh` Host，或复用同 profile 的存活 Host（基于 `/proc` 的属主检查）。被复用的 Host 在退出时保持运行。 |
 | `npm run dev:host` | 启动或检查开发 Host，但不启动长期 watcher。支持 `--profile`（默认 `workflow-kit-dev`）、`--port`（默认 `3080`），`--check` 只做校验。 |
-| `npm run publish` | 在暂存目录构建后以一次 rename 替换 `lib/`，因此正在监听的 Host 不会看到写了一半的 bundle。 |
-| `npm run publish:watch` | 同上，并在 `src/` 任意变更时重新发布。 |
+| `npm run release` | 在暂存目录构建后以一次 rename 替换 `lib/`，因此正在监听的 Host 不会看到写了一半的 bundle。 |
+| `npm run release:watch` | 同上，并在 `src/` 任意变更时重新发布。 |
 
-**watcher 发布行为。** `scripts/watch.mjs`（由 `npm run dev` 使用）在 `.watch/publish-build` 中构建并原子替换 `lib/`。它同时监听 provider 的 `src/`：provider 的任意源码变更都会暂停发布，直到 Host 重启。`npm run publish:watch` 以同样方式发布完整的暂存构建，只由本包的 `src/` 触发。
+**watcher 发布行为。** `scripts/watch.mjs`（由 `npm run dev` 使用）在 `.watch/publish-build` 中构建并原子替换 `lib/`。它同时监听 provider 的 `src/`：provider 的任意源码变更都会暂停发布，直到 Host 重启。`npm run release:watch` 以同样方式发布完整的暂存构建，只由本包的 `src/` 触发。
 
 策略与提示接线的设计记录见 [upgrade.md](upgrade.md) 与 [docs/upgrade-prompts.md](docs/upgrade-prompts.md)。
 

@@ -4,8 +4,8 @@
  *
  * The profile's own `cordis.patch.yml` carries the module-HMR row for the two
  * business checkouts, so this script only verifies that binding and runs `dsh`.
- * Publish sources separately with `npm run publish` in either checkout
- * (`npm run publish:watch` to keep republishing): client-only changes are picked
+ * Publish sources separately with `npm run release` in either checkout
+ * (`npm run release:watch` to keep republishing): client-only changes are picked
  * up by the browser's client-hmr poll, host module changes reload through HMR.
  *
  * Usage: node scripts/start-dev-host.mjs [--profile name] [--port 3080] [--check]
@@ -48,7 +48,7 @@ for (const [name, checkout] of Object.entries(checkouts)) {
   const linked = join(profileDir, "node_modules", name);
   if (!existsSync(linked)) throw new Error(`${name} is not installed in profile ${profile}`);
   if (realpathSync(linked) !== realpathSync(checkout)) throw new Error(`${name} must resolve to ${checkout}, not ${realpathSync(linked)}; run the link setup first`);
-  if (!existsSync(join(checkout, "lib", "index.js"))) throw new Error(`${name} has no built lib; run "npm run publish" in ${checkout}`);
+  if (!existsSync(join(checkout, "lib", "index.js"))) throw new Error(`${name} has no built lib; run "npm run release" in ${checkout}`);
   if (enabled.filter(entry => entry.id === name || entry.name === name).length !== 1) throw new Error(`profile ${profile} must enable exactly one ${name} consumer`);
 }
 
